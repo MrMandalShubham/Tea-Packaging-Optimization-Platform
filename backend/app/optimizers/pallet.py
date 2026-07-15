@@ -130,26 +130,3 @@ def optimize_pallet(
         )
 
     return max(candidates, key=lambda c: c.cartons_per_pallet)
-
-
-def estimate_current_pallet(
-    carton_length_mm: float,
-    carton_width_mm: float,
-    carton_height_mm: float,
-    carton_weight_kg: float,
-) -> PalletResult:
-    """
-    Naive pallet estimate (current practice) — single orientation, no optimization.
-    Assumes 20% fewer cartons per pallet due to poor arrangement.
-    """
-    optimal = optimize_pallet(carton_length_mm, carton_width_mm, carton_height_mm, carton_weight_kg)
-    # Naive: use fewer per layer (floor to 80%)
-    naive_per_layer = max(1, int(optimal.cartons_per_layer * 0.75))
-    naive_layers = optimal.layers
-    return PalletResult(
-        cartons_per_layer=naive_per_layer,
-        layers=naive_layers,
-        cartons_per_pallet=naive_per_layer * naive_layers,
-        pallet_height_m=optimal.pallet_height_m,
-        total_weight_kg=round(naive_per_layer * naive_layers * carton_weight_kg, 2),
-    )

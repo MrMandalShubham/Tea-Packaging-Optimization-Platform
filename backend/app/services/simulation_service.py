@@ -1,23 +1,56 @@
 """
-Simulation service — orchestrates the full 5-stage optimization pipeline.
+Simulation service — orchestrates optimisation and builds the comparison.
 
-Flow: Inputs → Package → Carton → Pallet → Container → Compare → Cost
+Flow: Inputs → joint search (package+carton+pallet+container solved together)
+             → independent baseline (conventional practice)
+             → comparison → cost summary
 
-Pure computation layer. Phase 3 wires this to database persistence.
+The two halves are deliberately independent: the optimiser does not know the
+baseline exists, and the baseline does not know the optimiser's answer. They meet
+only in the subtraction. That is what makes the reported saving mean something —
+see `optimizers/baseline.py` for why this matters.
+
+Pure computation layer: no database access, so every function here is directly
+testable and reusable.
 """
 
+from __future__ import annotations
+
+import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
-from app.optimizers.package import optimize_package, PackageResult
+from app.optimizers.joint import (
+    optimize_jointly,
+    Configuration,
+    Constraints,
+    SearchResult,
+    JointCarton,
+    JointPallet,
+    JointContainer,
+)
+from app.optimizers.baseline import compute_baseline, BaselineResult
+from app.optimizers.package import PackageResult
+from app.optimizers.constants import DEFAULT_DISTANCE_NM
+
+# Retained for the standalone /optimize/* stage endpoints.
+from app.optimizers.package import optimize_package
 from app.optimizers.carton import optimize_carton, CartonResult
-from app.optimizers.pallet import optimize_pallet, estimate_current_pallet, PalletResult
+from app.optimizers.pallet import optimize_pallet, PalletResult
 from app.optimizers.container import optimize_container, ContainerResult
-from app.optimizers.constants import MATERIALS, FREIGHT_RATE_PER_NM, DEFAULT_DISTANCE_NM, CONTAINERS
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
 class CurrentEstimate:
+    """
+    The baseline, flattened to the shape the API and DB expect.
+
+    This is a view over `BaselineResult`; the authoritative values and their
+    provenance live there.
+    """
+
     package_length_mm: float = 0
     package_width_mm: float = 0
     package_height_mm: float = 0
@@ -27,9 +60,14 @@ class CurrentEstimate:
     units_per_carton: int = 0
     cartons_per_pallet: int = 0
     containers_needed: int = 0
+    container_type: str = ""
+    utilization_pct: float = 0.0
     packaging_cost: float = 0
+    carton_cost: float = 0
     freight_cost: float = 0
     total_cost: float = 0
+    assumptions: list[str] = field(default_factory=list)
+    is_user_supplied: bool = False
 
 
 @dataclass
@@ -39,37 +77,44 @@ class ComparisonRow:
     ai_value: float
     improvement_pct: float
     unit: str = ""
+    # Plain-English reason this line moved. The assessment asks for optimisation
+    # logic that is "transparent and explainable"; an unexplained percentage is
+    # neither.
+    driver: str = ""
 
 
 @dataclass
 class PipelineResult:
-    # Package stage
+    # Optimised solution
     best_package: Optional[PackageResult] = None
     package_alternatives: list[PackageResult] = field(default_factory=list)
+    carton: Optional[JointCarton] = None
+    pallet: Optional[JointPallet] = None
+    best_container: Optional[JointContainer] = None
+    container_alternatives: list[JointContainer] = field(default_factory=list)
 
-    # Carton stage
-    carton: Optional[CartonResult] = None
+    # Full configurations, cheapest per container type (Module 6)
+    configurations_by_container: dict[str, Configuration] = field(default_factory=dict)
+    alternative_configurations: list[Configuration] = field(default_factory=list)
 
-    # Pallet stage
-    pallet: Optional[PalletResult] = None
-
-    # Container stage
-    best_container: Optional[ContainerResult] = None
-    container_alternatives: list[ContainerResult] = field(default_factory=list)
-
-    # Current (naive) estimate
+    # Baseline
     current: Optional[CurrentEstimate] = None
+    baseline: Optional[BaselineResult] = None
 
-    # Comparison rows
     comparison: list[ComparisonRow] = field(default_factory=list)
 
-    # Cost summary
+    # Cost summary (optimised side)
+    cartons_needed: int = 0
     packaging_cost: float = 0.0
+    carton_cost: float = 0.0
     freight_cost: float = 0.0
     total_cost: float = 0.0
     total_savings: float = 0.0
 
-    # Source inputs
+    # Transparency
+    configurations_evaluated: int = 0
+
+    # Echo of the inputs
     tea_density: float = 0.0
     package_weight: float = 0.0
     shipment_quantity: int = 0
@@ -77,6 +122,42 @@ class PipelineResult:
     package_shape: str = ""
     packaging_material: str = ""
     target_market: Optional[str] = None
+
+
+def resolve_shipment_type(
+    shipment_quantity: int,
+    shipment_type: str,
+) -> tuple[int, Optional[int]]:
+    """
+    Interpret Shipment Quantity according to Shipment Type.
+
+    The brief specifies the field but not its semantics, so this is a documented
+    assumption (see docs/assumptions.md). The previous implementation stored the
+    field and ignored it — both settings produced byte-identical output.
+
+      total_weight  — the quantity is the whole order. The optimiser uses as many
+                      containers as it needs.
+      per_container — the quantity must fit in a single container. This answers
+                      "can I get this many pouches into one box, and how?", and
+                      the optimiser rejects any solution needing a second.
+
+    Returns:
+        (pouch_count, max_containers) — max_containers is None when unbounded.
+
+    Raises:
+        ValueError: on a non-positive quantity or unknown shipment type.
+    """
+    if shipment_quantity <= 0:
+        raise ValueError("shipment_quantity must be positive")
+
+    if shipment_type == "per_container":
+        return int(shipment_quantity), 1
+    if shipment_type == "total_weight":
+        return int(shipment_quantity), None
+    raise ValueError(
+        f"Unknown shipment_type {shipment_type!r}; "
+        f"expected 'total_weight' or 'per_container'"
+    )
 
 
 def run_full_pipeline(
@@ -87,7 +168,10 @@ def run_full_pipeline(
     package_shape: str = "square",
     packaging_material: str = "paper",
     target_market: Optional[str] = None,
-    # Optional: user-provided current values for comparison
+    constraints: Optional[Constraints] = None,
+    distance_nm: float = DEFAULT_DISTANCE_NM,
+    # User-supplied "what we do today" values. When absent, the baseline is
+    # modelled from catalogue-and-habit instead.
     current_package_l: Optional[float] = None,
     current_package_w: Optional[float] = None,
     current_package_h: Optional[float] = None,
@@ -101,87 +185,78 @@ def run_full_pipeline(
     current_freight_cost: Optional[float] = None,
 ) -> PipelineResult:
     """
-    Run the complete 5-stage optimization pipeline.
+    Optimise a shipment and compare it against current practice.
 
-    Stages:
-      1. Package  — inner pouch dimensions
-      2. Carton   — master carton dimensions
-      3. Pallet   — pallet layout
-      4. Container— container selection
-      5. Compare  — current vs AI
+    Args:
+        tea_density: g/cm³.
+        package_weight: net tea per pouch, grams.
+        shipment_quantity: interpreted according to `shipment_type`.
+        shipment_type: "total_weight" | "per_container".
+        package_shape: "square" | "round".
+        packaging_material: "paper" | "plastic" | "metal".
+        target_market: optional; recorded, not yet a constraint.
+        constraints: physical limits; defaults to industry norms.
+        distance_nm: voyage distance for the freight model.
+        current_*: the exporter's real figures, if known.
 
-    Returns a PipelineResult with all computed values.
+    Returns:
+        PipelineResult with the optimised solution, the baseline, and the
+        comparison between them.
+
+    Raises:
+        ValueError: on invalid inputs or if no configuration is feasible.
     """
-    # Package weight in grams → convert to kg for downstream use
-    package_weight_kg = package_weight / 1000.0
+    qty, max_containers = resolve_shipment_type(shipment_quantity, shipment_type)
 
     result = PipelineResult(
         tea_density=tea_density,
         package_weight=package_weight,
-        shipment_quantity=shipment_quantity,
+        shipment_quantity=qty,
         shipment_type=shipment_type,
         package_shape=package_shape,
         packaging_material=packaging_material,
         target_market=target_market,
     )
 
-    # ── Stage 1: Package Optimization ────────────────────────────────
-    pkg_results = optimize_package(
+    # ── Optimised side: all four stages solved as one problem ────────────────
+    search: SearchResult = optimize_jointly(
         tea_density=tea_density,
-        package_weight=package_weight,
+        package_weight_g=package_weight,
+        shipment_quantity=qty,
         shape=package_shape,
         material=packaging_material,
+        constraints=constraints,
+        distance_nm=distance_nm,
+        max_containers=max_containers,
     )
-    result.best_package = pkg_results[0]
-    result.package_alternatives = pkg_results[1:]
+    winner = search.best
 
-    best = result.best_package
+    result.best_package, result.package_alternatives = _rank_packages(search)
+    result.carton = winner.carton
+    result.pallet = winner.pallet
+    result.best_container = winner.container
+    result.container_alternatives = [
+        cfg.container
+        for key, cfg in search.by_container_type.items()
+        if key != winner.container.container_type
+    ]
+    result.configurations_by_container = search.by_container_type
+    result.alternative_configurations = search.alternatives
+    result.configurations_evaluated = search.evaluated
 
-    # ── Stage 2: Carton Optimization ─────────────────────────────────
-    carton = optimize_carton(
-        package_length_mm=best.length_mm,
-        package_width_mm=best.width_mm,
-        package_height_mm=best.height_mm,
-        shipment_quantity=shipment_quantity,
-        package_weight_kg=package_weight_kg,
-    )
-    result.carton = carton
+    result.cartons_needed = winner.cartons_needed
+    result.packaging_cost = winner.packaging_cost
+    result.carton_cost = winner.carton_cost
+    result.freight_cost = winner.freight_cost
+    result.total_cost = winner.total_cost
 
-    # ── Stage 3: Pallet Optimization ─────────────────────────────────
-    pallet = optimize_pallet(
-        carton_length_mm=carton.inner_length_mm,
-        carton_width_mm=carton.inner_width_mm,
-        carton_height_mm=carton.inner_height_mm,
-        carton_weight_kg=carton.carton_weight_kg,
-    )
-    result.pallet = pallet
-
-    # ── Stage 4: Container Optimization ──────────────────────────────
-    containers = optimize_container(
-        pallet_height_m=pallet.pallet_height_m,
-        cartons_per_pallet=pallet.cartons_per_pallet,
-        units_per_carton=carton.units_per_carton,
-        shipment_quantity=shipment_quantity,
-        carton_length_mm=carton.inner_length_mm,
-        carton_width_mm=carton.inner_width_mm,
-        carton_height_mm=carton.inner_height_mm,
-    )
-    result.best_container = containers[0]
-    result.container_alternatives = containers[1:]
-
-    bc = result.best_container
-
-    # ── Stage 5: Current Estimate & Comparison ───────────────────────
-    result.current = _compute_current_estimate(
+    # ── Baseline side: modelled independently, costed identically ───────────
+    baseline = compute_baseline(
         tea_density=tea_density,
-        package_weight_kg=package_weight_kg,
-        shipment_quantity=shipment_quantity,
-        best=best,
-        carton=carton,
-        pallet=pallet,
-        best_container=bc,
-        packaging_material=packaging_material,
-        # User overrides
+        package_weight_g=package_weight,
+        shipment_quantity=qty,
+        material=packaging_material,
+        distance_nm=distance_nm,
         current_package_l=current_package_l,
         current_package_w=current_package_w,
         current_package_h=current_package_h,
@@ -194,123 +269,234 @@ def run_full_pipeline(
         current_packaging_cost=current_packaging_cost,
         current_freight_cost=current_freight_cost,
     )
+    result.baseline = baseline
+    result.current = _flatten_baseline(baseline)
+    result.total_savings = round(baseline.total_cost - result.total_cost, 2)
 
-    # ── Cost Summary ────────────────────────────────────────────────
-    result.packaging_cost = bc.total_units * best.cost_estimate
-    result.freight_cost = bc.containers_needed * bc.freight_cost_per_container
-    result.total_cost = result.packaging_cost + result.freight_cost
-    result.total_savings = result.current.total_cost - result.total_cost
+    if result.total_savings < 0:
+        # Honest baselines can lose. Surface it rather than hiding it: it usually
+        # means the order is too small to fill a container, so the fixed freight
+        # cost dominates and no packaging change can pay for it.
+        logger.info(
+            "Optimised cost exceeds baseline by %.2f for qty=%d — likely a "
+            "sub-container order where freight is fixed.",
+            -result.total_savings,
+            qty,
+        )
 
-    # Build comparison rows
     result.comparison = _build_comparison(result)
-
     return result
 
 
-def _compute_current_estimate(
-    tea_density: float,
-    package_weight_kg: float,
-    shipment_quantity: int,
-    best: PackageResult,
-    carton: CartonResult,
-    pallet: PalletResult,
-    best_container: ContainerResult,
-    packaging_material: str,
-    current_package_l: Optional[float] = None,
-    current_package_w: Optional[float] = None,
-    current_package_h: Optional[float] = None,
-    current_carton_l: Optional[float] = None,
-    current_carton_w: Optional[float] = None,
-    current_carton_h: Optional[float] = None,
-    current_units_per_carton: Optional[int] = None,
-    current_cartons_per_pallet: Optional[int] = None,
-    current_containers: Optional[int] = None,
-    current_packaging_cost: Optional[float] = None,
-    current_freight_cost: Optional[float] = None,
-) -> CurrentEstimate:
+def _rank_packages(
+    search: SearchResult,
+) -> tuple[PackageResult, list[PackageResult]]:
     """
-    Build the "current" (unoptimized) estimate.
+    Re-rank pouches by what the *joint* search chose, not by the package stage.
 
-    If user provides explicit current values, use those.
-    Otherwise, derive a naive estimate that's ~15-25% worse than optimized.
+    `optimize_package` ranks candidates on pouch material efficiency alone, and by
+    that measure a cube always wins — it has the least surface area per unit
+    volume. But the cube tiles the carton and pallet badly, so the joint search
+    routinely picks a different pouch.
+
+    Carrying the package stage's `is_best`/`rank` through would therefore label a
+    pouch "Best" that no part of the recommended solution actually uses: the UI
+    showed a 93.7 mm cube as Best while the carton was built from a 93 × 79 × 112
+    pouch listed under "Alternatives".
+
+    Ranking here is by end-to-end cost, which is the only ranking that means
+    anything to the reader. Duplicates are dropped — several configurations often
+    share a pouch, and listing it three times is noise.
     """
-    ce = CurrentEstimate()
+    from dataclasses import replace
 
-    # Package — 15% larger than optimized (looser fill)
-    if current_package_l:
-        ce.package_length_mm = current_package_l
-    else:
-        ce.package_length_mm = round(best.length_mm * 1.12, 1)
+    ordered: list[PackageResult] = []
+    seen: set[tuple[float, float, float]] = set()
 
-    if current_package_w:
-        ce.package_width_mm = current_package_w
-    else:
-        ce.package_width_mm = round(best.width_mm * 1.12, 1)
+    for cfg in [search.best, *search.alternatives]:
+        p = cfg.package
+        key = (p.length_mm, p.width_mm, p.height_mm)
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(p)
 
-    if current_package_h:
-        ce.package_height_mm = current_package_h
-    else:
-        ce.package_height_mm = round(best.height_mm * 1.12, 1)
+    ranked = [
+        replace(p, rank=i, is_best=(i == 1)) for i, p in enumerate(ordered, start=1)
+    ]
+    return ranked[0], ranked[1:]
 
-    # Carton — 20% fewer units per carton (poor arrangement)
-    naive_units = max(1, int(carton.units_per_carton * 0.75))
-    ce.units_per_carton = current_units_per_carton or naive_units
-    ce.carton_length_mm = current_carton_l or round(carton.inner_length_mm * 1.10, 1)
-    ce.carton_width_mm = current_carton_w or round(carton.inner_width_mm * 1.10, 1)
-    ce.carton_height_mm = current_carton_h or round(carton.inner_height_mm * 1.10, 1)
 
-    # Pallet — 20% fewer cartons
-    ce.cartons_per_pallet = current_cartons_per_pallet or max(1, int(pallet.cartons_per_pallet * 0.80))
+def _flatten_baseline(b: BaselineResult) -> CurrentEstimate:
+    """Project a BaselineResult onto the flat shape the API/DB layer expects."""
+    return CurrentEstimate(
+        package_length_mm=b.package_length_mm,
+        package_width_mm=b.package_width_mm,
+        package_height_mm=b.package_height_mm,
+        carton_length_mm=b.carton_length_mm,
+        carton_width_mm=b.carton_width_mm,
+        carton_height_mm=b.carton_height_mm,
+        units_per_carton=b.units_per_carton,
+        cartons_per_pallet=b.cartons_per_pallet,
+        containers_needed=b.containers_needed,
+        container_type=b.container_type,
+        utilization_pct=b.utilization_pct,
+        packaging_cost=b.packaging_cost,
+        carton_cost=b.carton_cost,
+        freight_cost=b.freight_cost,
+        total_cost=b.total_cost,
+        assumptions=list(b.assumptions),
+        is_user_supplied=b.is_user_supplied,
+    )
 
-    # Container — worse utilization → more containers needed
-    naive_util = best_container.utilization_pct * 0.80
-    # Recalculate containers needed with naive utilization
-    pkg_vol_litres = (ce.package_length_mm * ce.package_width_mm * ce.package_height_mm) / 1_000_000
-    carton_vol = ce.carton_length_mm * ce.carton_width_mm * ce.carton_height_mm / 1e9  # m³
-    total_carton_vol = (shipment_quantity / ce.units_per_carton) * carton_vol
-    container_vol = best_container.container_volume_m3
-    ce.containers_needed = current_containers or max(1, int(total_carton_vol / (container_vol * (naive_util / 100))))
 
-    # Costs
-    mat_cost = MATERIALS.get(packaging_material, {}).get("cost_per_sqm", 12.0)
-    # Current material usage per package: larger surface area
-    ce_pkg_sa = 2 * (
-        ce.package_length_mm * ce.package_width_mm
-        + ce.package_width_mm * ce.package_height_mm
-        + ce.package_height_mm * ce.package_length_mm
-    ) / 1_000_000  # m²
-    ce.packaging_cost = current_packaging_cost or (shipment_quantity * ce_pkg_sa * mat_cost)
-    ce.freight_cost = current_freight_cost or (ce.containers_needed * best_container.freight_cost_per_container)
-    ce.total_cost = ce.packaging_cost + ce.freight_cost
+def _pct_improvement(current: float, ai: float) -> float:
+    """Percent reduction from `current` to `ai`. Positive means the AI is better."""
+    if current == 0:
+        return 0.0
+    return round(((current - ai) / current) * 100, 1)
 
-    return ce
+
+def _pct_increase(current: float, ai: float) -> float:
+    """Percent gain from `current` to `ai`. For metrics where higher is better."""
+    if current == 0:
+        return 0.0
+    return round(((ai - current) / current) * 100, 1)
 
 
 def _build_comparison(r: PipelineResult) -> list[ComparisonRow]:
-    """Build the comparison table rows from pipeline results."""
+    """
+    Build the Current-vs-AI table (Module 7).
+
+    Every row compares two independently computed numbers, and carries the reason
+    it moved so the user can audit the claim rather than trust it.
+    """
     c = r.current
-    best = r.best_package
+    pkg = r.best_package
     carton = r.carton
     pallet = r.pallet
     bc = r.best_container
+    b = r.baseline
 
-    def _pct(current: float, ai: float) -> float:
-        """Improvement %: positive means AI is better."""
-        if current == 0:
-            return 0.0
-        return round(((current - ai) / current) * 100, 1)
+    current_pkg_vol = (
+        c.package_length_mm * c.package_width_mm * c.package_height_mm / 1000.0
+    )
+    current_carton_vol = (
+        c.carton_length_mm * c.carton_width_mm * c.carton_height_mm / 1000.0
+    )
+    ai_carton_vol = (
+        carton.outer_length_mm * carton.outer_width_mm * carton.outer_height_mm / 1000.0
+    )
 
-    rows = [
-        ComparisonRow("Package Volume (cm³)", round(c.package_length_mm * c.package_width_mm * c.package_height_mm / 1000, 1), best.volume_cm3, _pct(c.package_length_mm * c.package_width_mm * c.package_height_mm / 1000, best.volume_cm3), "cm³"),
-        ComparisonRow("Units Per Carton", float(c.units_per_carton), float(carton.units_per_carton), _pct(float(c.units_per_carton), float(carton.units_per_carton)), "units"),
-        ComparisonRow("Cartons Per Pallet", float(c.cartons_per_pallet), float(pallet.cartons_per_pallet), _pct(float(c.cartons_per_pallet), float(pallet.cartons_per_pallet)), "cartons"),
-        ComparisonRow("Containers Required", float(c.containers_needed), float(bc.containers_needed), _pct(float(c.containers_needed), float(bc.containers_needed)), "containers"),
-        ComparisonRow("Container Utilization", round(bc.utilization_pct * 0.80, 1), bc.utilization_pct, _pct(bc.utilization_pct * 0.80, bc.utilization_pct), "%"),
-        ComparisonRow("Packaging Cost (₹)", c.packaging_cost, r.packaging_cost, _pct(c.packaging_cost, r.packaging_cost), "₹"),
-        ComparisonRow("Freight Cost (₹)", c.freight_cost, r.freight_cost, _pct(c.freight_cost, r.freight_cost), "₹"),
-        ComparisonRow("Total Cost (₹)", c.total_cost, r.total_cost, _pct(c.total_cost, r.total_cost), "₹"),
+    return [
+        ComparisonRow(
+            "Package Volume (cm³)",
+            round(current_pkg_vol, 1),
+            round(pkg.volume_cm3, 1),
+            _pct_improvement(current_pkg_vol, pkg.volume_cm3),
+            "cm³",
+            "Custom-sized pouch instead of rounding up to a stock format.",
+        ),
+        ComparisonRow(
+            "Carton Volume (cm³)",
+            round(current_carton_vol, 1),
+            round(ai_carton_vol, 1),
+            _pct_improvement(current_carton_vol, ai_carton_vol),
+            "cm³",
+            "Carton sized to tile the pallet rather than taken from the stock range.",
+        ),
+        ComparisonRow(
+            "Units Per Carton",
+            float(c.units_per_carton),
+            float(carton.units_per_carton),
+            _pct_increase(float(c.units_per_carton), float(carton.units_per_carton)),
+            "units",
+            "Fewer units per carton is often better: a smaller carton tiles the "
+            "pallet more densely and stacks two-high in the container.",
+        ),
+        ComparisonRow(
+            "Cartons Per Pallet",
+            float(c.cartons_per_pallet),
+            float(pallet.cartons_per_pallet),
+            _pct_increase(
+                float(c.cartons_per_pallet), float(pallet.cartons_per_pallet)
+            ),
+            "cartons",
+            f"Pallet footprint {pallet.footprint_utilization_pct}% via "
+            f"{pallet.layer_pattern} layers vs a single fixed orientation.",
+        ),
+        ComparisonRow(
+            "Containers Required",
+            float(c.containers_needed),
+            float(bc.containers_needed),
+            _pct_improvement(float(c.containers_needed), float(bc.containers_needed)),
+            "containers",
+            f"{bc.container_type} chosen on cost"
+            + (
+                f" and pallets double-stacked, vs {c.container_type} floor-loaded."
+                if bc.pallet_stack > 1
+                else f", vs {c.container_type} by convention."
+            ),
+        ),
+        ComparisonRow(
+            "Container Utilization",
+            c.utilization_pct,
+            bc.utilization_pct,
+            _pct_increase(c.utilization_pct, bc.utilization_pct),
+            "%",
+            "Share of the volume you pay freight on that actually holds tea.",
+        ),
+        ComparisonRow(
+            "Packaging Cost (₹)",
+            c.packaging_cost,
+            r.packaging_cost,
+            _pct_improvement(c.packaging_cost, r.packaging_cost),
+            "₹",
+            "Less pouch material per unit, over the same shipment quantity.",
+        ),
+        ComparisonRow(
+            "Carton Cost (₹)",
+            c.carton_cost,
+            r.carton_cost,
+            _pct_improvement(c.carton_cost, r.carton_cost),
+            "₹",
+            # This line legitimately goes UP when the optimiser trades a smaller
+            # carton (more boxes, more board) for a denser pallet and less freight.
+            # Explaining that as "lighter cartons are cheaper" would contradict the
+            # number sitting next to it.
+            (
+                f"Lighter cartons drop the board grade to {carton.board_grade}."
+                if r.carton_cost <= c.carton_cost
+                else (
+                    f"Deliberately higher: {r.cartons_needed:,} smaller cartons cost "
+                    f"more board than {b.cartons_needed:,} large ones, but they tile "
+                    f"the pallet and stack, which more than pays for itself in freight."
+                )
+            ),
+        ),
+        ComparisonRow(
+            "Freight Cost (₹)",
+            c.freight_cost,
+            r.freight_cost,
+            _pct_improvement(c.freight_cost, r.freight_cost),
+            "₹",
+            "Fewer containers on the same voyage.",
+        ),
+        ComparisonRow(
+            "Total Cost (₹)",
+            c.total_cost,
+            r.total_cost,
+            _pct_improvement(c.total_cost, r.total_cost),
+            "₹",
+            "Packaging + carton board + freight.",
+        ),
     ]
-    return rows
+
+
+# ── Standalone stage runners (POST /optimize/*) ───────────────────────────────
+# These expose each stage on its own, per the assessment's endpoint list. They
+# are intentionally *not* the pipeline: a stage in isolation cannot see the
+# downstream cost, which is exactly the limitation `optimize_jointly` removes.
 
 
 def run_package_only(
@@ -319,7 +505,7 @@ def run_package_only(
     package_shape: str = "square",
     packaging_material: str = "paper",
 ) -> list[PackageResult]:
-    """Run only the package optimization stage."""
+    """Run only the package optimisation stage."""
     return optimize_package(
         tea_density=tea_density,
         package_weight=package_weight,
@@ -335,7 +521,7 @@ def run_carton_only(
     shipment_quantity: int,
     package_weight_g: float,
 ) -> CartonResult:
-    """Run only the carton optimization stage."""
+    """Run only the carton optimisation stage."""
     return optimize_carton(
         package_length_mm=package_length_mm,
         package_width_mm=package_width_mm,
@@ -351,7 +537,7 @@ def run_pallet_only(
     carton_height_mm: float,
     carton_weight_kg: float,
 ) -> PalletResult:
-    """Run only the pallet optimization stage."""
+    """Run only the pallet optimisation stage."""
     return optimize_pallet(
         carton_length_mm=carton_length_mm,
         carton_width_mm=carton_width_mm,
@@ -369,7 +555,7 @@ def run_container_only(
     shipment_quantity: int,
     units_per_carton: int = 1,
 ) -> list[ContainerResult]:
-    """Run only the container optimization stage."""
+    """Run only the container optimisation stage."""
     return optimize_container(
         pallet_height_m=pallet_height_m,
         cartons_per_pallet=cartons_per_pallet,

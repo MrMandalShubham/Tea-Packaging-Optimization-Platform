@@ -20,12 +20,28 @@ from app.optimizers.constants import (
 
 @dataclass
 class PackageResult:
-    """Result of package dimension optimization."""
+    """
+    Result of package dimension optimization.
+
+    Three volumes are in play and they are not interchangeable:
+
+      product_volume_cm3 — the tea itself, mass / density. Module 3's
+                           "Product Volume". Fixed by the inputs.
+      volume_cm3         — the pouch's internal volume. Larger than the product,
+                           because tea needs headspace to settle and seal.
+      headspace_cm3      — the difference.
+
+    `product_volume_cm3` is carried rather than recomputed downstream: it was
+    previously a local variable inside `optimize_package`, so the API could not
+    report it and the UI would have had to redo `weight / density` itself —
+    putting a piece of the physics in the browser.
+    """
 
     length_mm: float
     width_mm: float
     height_mm: float
     volume_cm3: float
+    product_volume_cm3: float
     surface_area_cm2: float
     fill_ratio: float
     cost_estimate: float
@@ -35,6 +51,11 @@ class PackageResult:
     rank: int = 1
     is_best: bool = False
     score: float = 0.0
+
+    @property
+    def headspace_cm3(self) -> float:
+        """Air inside the pouch — pouch volume less the tea."""
+        return round(max(self.volume_cm3 - self.product_volume_cm3, 0.0), 2)
 
 
 def _surface_area_square(length_mm: float, width_mm: float, height_mm: float) -> float:
@@ -297,6 +318,7 @@ def optimize_package(
             width_mm=entry["width_mm"],
             height_mm=entry["height_mm"],
             volume_cm3=entry["volume_cm3"],
+            product_volume_cm3=round(net_volume_cm3, 2),
             surface_area_cm2=entry.get("surface_area_cm2", 0.0),
             fill_ratio=entry["fill_ratio"],
             cost_estimate=entry["cost_estimate"],

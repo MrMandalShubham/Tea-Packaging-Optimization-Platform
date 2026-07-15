@@ -180,34 +180,6 @@ class CartonOptimizer:
                 return grade, thickness
         return "9-ply", 9.0
 
-    def calculate_effective_cost(self, result: CartonResult,
-                                  cartons_needed: int) -> float:
-        """
-        Estimate carton cost based on board grade.
-        Rough formula: cost per carton ≈ gsm × surface_area_m2 × 0.15 INR
-        (0.15 is a rough conversion from GSM to INR/m² for corrugated board)
-        """
-        _, _, _gsm = BOARD_GRADES[0]
-        for max_kg, grade, thickness, gsm in BOARD_GRADES:
-            if result.carton_weight_kg <= max_kg:
-                _gsm = gsm
-                break
-
-        # Outer surface area in m²
-        outer_l_m = result.outer_length_mm / 1000.0
-        outer_w_m = result.outer_width_mm / 1000.0
-        outer_h_m = result.outer_height_mm / 1000.0
-
-        # Approximate board area needed (box surface area × 1.2 for flaps)
-        surface_area_m2 = 2 * (
-            outer_l_m * outer_w_m +
-            outer_l_m * outer_h_m +
-            outer_w_m * outer_h_m
-        ) * 1.2
-
-        cost_per_carton = _gsm * surface_area_m2 * 0.15
-        return round(cost_per_carton * cartons_needed, 2)
-
 
 # ── Convenience function ──────────────────────────────────────────────────────
 

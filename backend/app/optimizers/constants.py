@@ -96,6 +96,40 @@ MATERIALS = {
     },
 }
 
+# ── Package weight catalogue (retail SKUs) ──────────────────────
+# The brief specifies Package Weight as a dropdown, so the exporter picks a SKU
+# rather than typing a number. These are the standard retail formats for tea.
+#
+# This is a *UI catalogue*, not an engine constraint: the optimiser handles any
+# positive weight, and the standalone /optimize/* endpoints stay open so an
+# analyst can model a non-standard format.
+PACKAGE_WEIGHTS_G = [
+    {"grams": 25.0, "label": "25 g — Sample / sachet"},
+    {"grams": 50.0, "label": "50 g — Sample"},
+    {"grams": 100.0, "label": "100 g — Retail small"},
+    {"grams": 250.0, "label": "250 g — Retail standard"},
+    {"grams": 500.0, "label": "500 g — Retail large"},
+    {"grams": 1000.0, "label": "1 kg — Bulk retail"},
+    {"grams": 2000.0, "label": "2 kg — Food service"},
+]
+
+DEFAULT_PACKAGE_WEIGHT_G = 250.0
+
+# Physical upper bound on a single pouch. A hand-packed retail pouch beyond this
+# stops being a pouch and becomes a sack, which this model does not cover.
+#
+# This exists so the limit is stated once. It was previously the literal `500.0`
+# repeated across three Pydantic schemas, which silently rejected 1 kg packs —
+# one of the most common tea SKUs — even though the engine costs them correctly.
+MAX_PACKAGE_WEIGHT_G = 5000.0
+MIN_PACKAGE_WEIGHT_G = 1.0
+
+# ── Tea density bounds ──────────────────────────────────────────
+# Real tea sits in 0.18–0.48 g/cm³ (see TEA_DENSITY). The accepted range is wider
+# because rejecting an unusual-but-real density is worse than modelling one.
+MAX_TEA_DENSITY = 5.0
+MIN_TEA_DENSITY = 0.01
+
 # ── Headspace / tolerance ───────────────────────────────────────
 HEADSPACE_RATIO = 0.15     # 15% extra volume for pouch
 FILL_RATIO_TARGET = 0.85   # 85% fill for packages
@@ -111,3 +145,19 @@ PACKAGE_SHAPES = {
 # ── Freight model ───────────────────────────────────────────────
 FREIGHT_RATE_PER_NM = 2.5     # INR per nautical mile for baseline container
 DEFAULT_DISTANCE_NM = 5000.0  # nautical miles
+
+# ── Corrugated board cost by grade (INR per m² of board) ────────
+# Indian corrugated market rates; covers board + conversion + printing.
+BOARD_COST_PER_SQM = {
+    "3-ply": 22.0,
+    "5-ply": 35.0,
+    "7-ply": 48.0,
+    "9-ply": 62.0,
+}
+
+# Board consumed per carton = outer surface area × this factor.
+# The excess covers flaps, glue tabs and trim waste.
+BOARD_AREA_FACTOR = 1.2
+
+# Tare weight of an empty EUR pallet (kg) — counts against container payload.
+PALLET_TARE_KG = 25.0

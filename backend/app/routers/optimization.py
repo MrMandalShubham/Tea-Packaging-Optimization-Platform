@@ -3,6 +3,8 @@ Optimization router — individual stage endpoints + compare endpoint.
 Run specific optimization stages without persisting to DB.
 """
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.schemas import (
@@ -30,6 +32,8 @@ from app.services.simulation_service import (
     run_full_pipeline,
 )
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api", tags=["Optimization"])
 
 
@@ -53,13 +57,14 @@ async def optimize_package(body: PackageOptimizeRequest):
             id="temp",
             simulation_id="temp",
             volume_cm3=results[0].volume_cm3,
+            product_volume_cm3=results[0].product_volume_cm3,
             length_mm=results[0].length_mm,
             width_mm=results[0].width_mm,
             height_mm=results[0].height_mm,
             shape=results[0].shape,
             material=results[0].material,
             fill_ratio=results[0].fill_ratio,
-            material_usage_sqm=results[0].material_usage,
+            material_usage_cm2=results[0].material_usage,
             cost_estimate=results[0].cost_estimate,
             is_best=True,
             rank=1,
@@ -71,13 +76,14 @@ async def optimize_package(body: PackageOptimizeRequest):
                 id="temp",
                 simulation_id="temp",
                 volume_cm3=alt.volume_cm3,
+                product_volume_cm3=alt.product_volume_cm3,
                 length_mm=alt.length_mm,
                 width_mm=alt.width_mm,
                 height_mm=alt.height_mm,
                 shape=alt.shape,
                 material=alt.material,
                 fill_ratio=alt.fill_ratio,
-                material_usage_sqm=alt.material_usage,
+                material_usage_cm2=alt.material_usage,
                 cost_estimate=alt.cost_estimate,
                 is_best=False,
                 rank=i,
@@ -170,33 +176,29 @@ async def optimize_container(body: ContainerOptimizeRequest):
         if not results:
             raise HTTPException(status_code=400, detail="No suitable container found")
 
-        best = ContainerConfigResponse(
-            id="temp",
-            simulation_id="temp",
-            container_type=results[0].container_type,
-            cartons_per_container=results[0].cartons_per_container,
-            utilization_pct=results[0].utilization_pct,
-            empty_space_m3=results[0].empty_space_m3,
-            total_units=results[0].total_units,
-            freight_cost=results[0].total_freight_cost,
-            is_best=True,
-        )
-
-        alternatives = []
-        for alt in results[1:]:
-            alternatives.append(ContainerConfigResponse(
+        def _to_response(r, is_best: bool) -> ContainerConfigResponse:
+            return ContainerConfigResponse(
                 id="temp",
                 simulation_id="temp",
-                container_type=alt.container_type,
-                cartons_per_container=alt.cartons_per_container,
-                utilization_pct=alt.utilization_pct,
-                empty_space_m3=alt.empty_space_m3,
-                total_units=alt.total_units,
-                freight_cost=alt.total_freight_cost,
-                is_best=False,
-            ))
+                container_type=r.container_type,
+                pallets_per_container=r.pallets_per_container,
+                pallet_stack=1,
+                cartons_per_container=r.cartons_per_container,
+                units_per_container=r.units_per_container,
+                capacity_utilization_pct=r.capacity_utilization_pct,
+                empty_space_per_container_m3=r.empty_space_per_container_m3,
+                containers_needed=r.containers_needed,
+                total_units_shipped=r.total_units_shipped,
+                utilization_pct=r.utilization_pct,
+                empty_space_total_m3=r.empty_space_total_m3,
+                freight_cost=r.total_freight_cost,
+                is_best=is_best,
+            )
 
-        return ContainerOptimizeResponse(best_container=best, alternatives=alternatives)
+        return ContainerOptimizeResponse(
+            best_container=_to_response(results[0], True),
+            alternatives=[_to_response(a, False) for a in results[1:]],
+        )
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -231,23 +233,34 @@ async def compare_scenarios(body: CompareRequest):
                 current_value=r.current_value,
                 ai_value=r.ai_value,
                 improvement_pct=r.improvement_pct,
+                unit=r.unit,
+                driver=r.driver,
             )
             for r in result.comparison
         ]
 
+        current = result.current
         return CompareResponse(
             simulation_id=body.simulation_id,
             rows=rows,
-            packaging_cost_current=result.current.packaging_cost if result.current else 0,
+            packaging_cost_current=current.packaging_cost if current else 0,
             packaging_cost_ai=result.packaging_cost,
-            freight_cost_current=result.current.freight_cost if result.current else 0,
+            carton_cost_current=current.carton_cost if current else 0,
+            carton_cost_ai=result.carton_cost,
+            freight_cost_current=current.freight_cost if current else 0,
             freight_cost_ai=result.freight_cost,
-            total_cost_current=result.current.total_cost if result.current else 0,
+            total_cost_current=current.total_cost if current else 0,
             total_cost_ai=result.total_cost,
             total_savings=result.total_savings,
+            # Without these the caller gets a savings figure and no way to check
+            # what it was measured against.
+            baseline_assumptions=list(current.assumptions) if current else [],
+            baseline_is_user_supplied=current.is_user_supplied if current else False,
         )
 
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        # Don't echo str(e) — it can carry internals into a client response.
+        logger.exception("Compare failed")
+        raise HTTPException(status_code=500, detail="Comparison failed")

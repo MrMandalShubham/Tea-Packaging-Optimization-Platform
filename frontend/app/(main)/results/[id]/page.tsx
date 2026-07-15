@@ -29,7 +29,19 @@ import {
   Legend,
 } from "recharts";
 import { ChatWidget } from "@/components/layout/chat-widget";
-import { ArrowLeft, Package, Truck, DollarSign, TrendingDown, Printer, Brain, Sparkles } from "lucide-react";
+import { exportSimulationToExcel } from "@/lib/export";
+import {
+  ArrowLeft,
+  Package,
+  Truck,
+  DollarSign,
+  TrendingDown,
+  Printer,
+  Brain,
+  Sparkles,
+  FileSpreadsheet,
+  Info,
+} from "lucide-react";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -122,19 +134,20 @@ export default function ResultsPage() {
     ? [best_container, ...container_alternatives]
     : [];
 
-  // Container chart data
+  // Container chart — packing density, which compares the schemes like for like.
+  // Shipment utilisation would rank them by how full the last box happens to be.
   const containerChartData = allContainers.map((c) => ({
     name: c.container_type,
-    Utilization: c.utilization_pct,
-    "Empty Space (m³)": c.empty_space_m3,
-    "Cartons Per Container": c.cartons_per_container,
+    Utilization: c.capacity_utilization_pct,
   }));
 
-  // Cost pie data
+  // Cost breakdown. Savings is deliberately excluded: it is the difference
+  // between two totals, not a slice of this one, and putting it in the same pie
+  // as real costs makes the total meaningless.
   const costPieData = [
     { name: "Packaging", value: comparison?.packaging_cost_ai ?? 0 },
+    { name: "Carton board", value: comparison?.carton_cost_ai ?? 0 },
     { name: "Freight", value: comparison?.freight_cost_ai ?? 0 },
-    { name: "Savings", value: comparison?.total_savings ?? 0 },
   ].filter((d) => d.value > 0);
 
   return (
@@ -155,14 +168,23 @@ export default function ResultsPage() {
             )}
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => exportSimulationToExcel(data)}
+            className="no-print"
+          >
+            <FileSpreadsheet className="h-4 w-4 mr-1" /> Excel
+          </Button>
           <Button
             variant="outline"
             size="sm"
             onClick={() => window.print()}
             className="no-print"
+            title="Opens your browser's print dialog — choose 'Save as PDF'"
           >
-            <Printer className="h-4 w-4 mr-1" /> Export PDF
+            <Printer className="h-4 w-4 mr-1" /> PDF
           </Button>
           <Badge variant="success" className="text-base px-3 py-1">
             {data.status}
@@ -246,19 +268,36 @@ export default function ResultsPage() {
         <h2 className="text-xl font-semibold mb-3 flex items-center gap-2">
           <Package className="h-5 w-5 text-primary" /> Package Recommendation
         </h2>
+        {/* An alternative often shows a LOWER cost/unit than the recommendation —
+            a cube minimises pouch material but tiles the carton and pallet badly,
+            losing far more on freight than it saves on film. Ranking is by total
+            landed cost, so say that plainly rather than letting the table look
+            self-contradictory. */}
+        <p className="text-sm text-muted-foreground mb-3 -mt-1">
+          Ranked by total landed cost — pouch + carton board + freight. A pouch with
+          a lower cost per unit can still lose overall if it stacks poorly.
+        </p>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {best_package && (
             <Card className="border-primary/50 ring-1 ring-primary/20">
               <CardHeader>
-                <CardTitle className="text-base">Best Package</CardTitle>
-                <CardDescription>Lowest cost, optimal fill</CardDescription>
+                <CardTitle className="text-base">Recommended</CardTitle>
+                <CardDescription>Lowest total landed cost</CardDescription>
               </CardHeader>
               <CardContent className="space-y-2 text-sm">
                 <Row label="Dimensions" value={`${best_package.length_mm} × ${best_package.width_mm} × ${best_package.height_mm} mm`} />
-                <Row label="Volume" value={`${best_package.volume_cm3} cm³`} />
+                {/* Product volume is the tea itself (mass / density); pouch volume
+                    adds headspace. Showing only one of them invites the reader to
+                    assume the pouch is 100% tea. */}
+                <Row label="Product Volume" value={`${best_package.product_volume_cm3} cm³`} />
+                <Row label="Pouch Volume" value={`${best_package.volume_cm3} cm³`} />
+                <Row
+                  label="Headspace"
+                  value={`${(best_package.volume_cm3 - best_package.product_volume_cm3).toFixed(1)} cm³`}
+                />
                 <Row label="Fill Ratio" value={`${(best_package.fill_ratio * 100).toFixed(1)}%`} />
-                <Row label="Material" value={`${best_package.material} · ${best_package.material_usage_sqm.toFixed(3)} m²`} />
-                <Row label="Cost/unit" value={`₹${best_package.cost_estimate.toFixed(3)}`} bold />
+                <Row label="Material Usage" value={`${best_package.material} · ${best_package.material_usage_cm2.toFixed(1)} cm²`} />
+                <Row label="Estimated Cost" value={`₹${best_package.cost_estimate.toFixed(3)} / unit`} bold />
               </CardContent>
             </Card>
           )}
@@ -267,12 +306,17 @@ export default function ResultsPage() {
             <Card key={alt.rank || i}>
               <CardHeader>
                 <CardTitle className="text-base">Alternative #{i + 1}</CardTitle>
+                <CardDescription>
+                  {alt.cost_estimate < (best_package?.cost_estimate ?? Infinity)
+                    ? "Cheaper film, worse overall"
+                    : "Higher total cost"}
+                </CardDescription>
               </CardHeader>
               <CardContent className="space-y-2 text-sm">
                 <Row label="Dimensions" value={`${alt.length_mm} × ${alt.width_mm} × ${alt.height_mm} mm`} />
-                <Row label="Volume" value={`${alt.volume_cm3} cm³`} />
+                <Row label="Pouch Volume" value={`${alt.volume_cm3} cm³`} />
                 <Row label="Fill Ratio" value={`${(alt.fill_ratio * 100).toFixed(1)}%`} />
-                <Row label="Cost/unit" value={`₹${alt.cost_estimate.toFixed(3)}`} />
+                <Row label="Estimated Cost" value={`₹${alt.cost_estimate.toFixed(3)} / unit`} />
               </CardContent>
             </Card>
           ))}
@@ -287,10 +331,17 @@ export default function ResultsPage() {
               <CardTitle className="text-base">Carton Configuration</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2 text-sm">
-              <Row label="Inner Dimensions" value={`${carton.length_mm} × ${carton.width_mm} × ${carton.height_mm} mm`} />
-              <Row label="Units Per Carton" value={String(carton.units_per_carton)} bold />
+              {/* Outer is the spec you order and palletise; inner is the cavity
+                  the pouches sit in. This card previously labelled the outer
+                  dimensions "Inner". */}
+              <Row label="Outer Dimensions" value={`${carton.length_mm} × ${carton.width_mm} × ${carton.height_mm} mm`} bold />
+              <Row label="Inner Dimensions" value={`${carton.inner_length_mm} × ${carton.inner_width_mm} × ${carton.inner_height_mm} mm`} />
+              <Row label="Units Per Carton" value={`${carton.units_per_carton}${carton.arrangement ? ` (${carton.arrangement})` : ""}`} bold />
               <Row label="Carton Weight" value={`${carton.carton_weight_kg} kg`} />
               <Row label="Board Grade" value={carton.board_grade} />
+              {carton.board_cost_per_carton != null && (
+                <Row label="Board Cost" value={`₹${carton.board_cost_per_carton.toFixed(2)} / carton`} />
+              )}
             </CardContent>
           </Card>
         )}
@@ -306,6 +357,16 @@ export default function ResultsPage() {
               <Row label="Cartons Per Pallet" value={String(pallet.cartons_per_pallet)} bold />
               <Row label="Pallet Height" value={`${pallet.pallet_height_m} m`} />
               <Row label="Total Weight" value={`${pallet.total_weight_kg} kg`} />
+              {pallet.footprint_utilization_pct != null && (
+                <Row label="Footprint Used" value={`${pallet.footprint_utilization_pct}%`} />
+              )}
+              {pallet.layer_pattern && <Row label="Layer Pattern" value={pallet.layer_pattern} />}
+              {best_container?.pallet_stack != null && (
+                <Row
+                  label="Stacked In Container"
+                  value={best_container.pallet_stack > 1 ? `${best_container.pallet_stack} high` : "Floor only"}
+                />
+              )}
             </CardContent>
           </Card>
         )}
@@ -344,25 +405,58 @@ export default function ResultsPage() {
             {/* Container detail table */}
             <div className="border rounded-md">
               <Table>
+                {/* Every column states which container it describes. A single
+                    "Units" column once meant capacity across all containers,
+                    which made a 20GP look like it out-shipped a 40GP — it
+                    doesn't, it just needs five boxes instead of two. */}
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Container</TableHead>
-                    <TableHead className="text-right">Cartons</TableHead>
-                    <TableHead className="text-right">Units</TableHead>
-                    <TableHead className="text-right">Utilization</TableHead>
-                    <TableHead className="text-right">Freight Cost</TableHead>
-                    <TableHead>Best</TableHead>
+                    <TableHead rowSpan={2} className="align-bottom">Container</TableHead>
+                    <TableHead colSpan={4} className="text-center border-l text-xs">
+                      Per container (full load)
+                    </TableHead>
+                    <TableHead colSpan={3} className="text-center border-l text-xs">
+                      This shipment
+                    </TableHead>
+                    <TableHead rowSpan={2} className="align-bottom border-l">Best</TableHead>
+                  </TableRow>
+                  <TableRow>
+                    <TableHead className="text-right border-l">Cartons</TableHead>
+                    <TableHead className="text-right" title="Pouches in one full container">
+                      Total Units
+                    </TableHead>
+                    <TableHead className="text-right" title="Packing density of a full container">
+                      Packed
+                    </TableHead>
+                    <TableHead className="text-right" title="Unused volume in one full container">
+                      Empty Space
+                    </TableHead>
+                    <TableHead className="text-right border-l">Needed</TableHead>
+                    <TableHead className="text-right" title="Share of booked volume that holds tea">
+                      Utilization
+                    </TableHead>
+                    <TableHead className="text-right">Freight</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {allContainers.map((c) => (
                     <TableRow key={c.container_type} className={c.is_best ? "bg-primary/5" : ""}>
-                      <TableCell className="font-medium">{c.container_type}</TableCell>
-                      <TableCell className="text-right">{c.cartons_per_container}</TableCell>
-                      <TableCell className="text-right">{c.total_units.toLocaleString()}</TableCell>
+                      <TableCell className="font-medium">
+                        {c.container_type}
+                        {c.pallet_stack != null && c.pallet_stack > 1 && (
+                          <span className="block text-[10px] text-muted-foreground">
+                            pallets {c.pallet_stack}-high
+                          </span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right border-l">{c.cartons_per_container.toLocaleString()}</TableCell>
+                      <TableCell className="text-right">{c.units_per_container.toLocaleString()}</TableCell>
+                      <TableCell className="text-right">{c.capacity_utilization_pct}%</TableCell>
+                      <TableCell className="text-right">{c.empty_space_per_container_m3} m³</TableCell>
+                      <TableCell className="text-right border-l font-medium">{c.containers_needed}</TableCell>
                       <TableCell className="text-right">{c.utilization_pct}%</TableCell>
                       <TableCell className="text-right">{formatCurrency(c.freight_cost)}</TableCell>
-                      <TableCell>{c.is_best && <Badge variant="success">Best</Badge>}</TableCell>
+                      <TableCell className="border-l">{c.is_best && <Badge variant="success">Best</Badge>}</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -373,10 +467,13 @@ export default function ResultsPage() {
       )}
 
       {/* ── Cost Breakdown + Comparison ──────────────────────────────── */}
+      {/* The comparison table carries a driver sentence per row, so it gets two
+          thirds of the width. At half width the explanations wrapped to two words
+          a line and became unreadable — which defeats the point of writing them. */}
       {comparison && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {/* Cost pie */}
-          <Card>
+          <Card className="md:col-span-1">
             <CardHeader>
               <CardTitle className="text-base flex items-center gap-2">
                 <DollarSign className="h-5 w-5 text-primary" /> Cost Breakdown
@@ -384,41 +481,77 @@ export default function ResultsPage() {
             </CardHeader>
             <CardContent>
               {costPieData.length > 0 ? (
-                <div className="h-56">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie
-                        data={costPieData}
-                        cx="50%"
-                        cy="50%"
-                        innerRadius={50}
-                        outerRadius={90}
-                        paddingAngle={4}
-                        dataKey="value"
-                        label={({ name, value }) => `${name}: ${formatCurrency(value)}`}
-                      >
-                        {costPieData.map((_, i) => (
-                          <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
-                        ))}
-                      </Pie>
-                      <Tooltip formatter={(v: number) => formatCurrency(v)} />
-                    </PieChart>
-                  </ResponsiveContainer>
-                </div>
+                <>
+                  {/* Labels were drawn outside the slices and clipped by the card
+                      on both sides. The values are listed underneath instead,
+                      where they are legible and can't overflow. */}
+                  <div className="h-44">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie
+                          data={costPieData}
+                          cx="50%"
+                          cy="50%"
+                          innerRadius={45}
+                          outerRadius={72}
+                          paddingAngle={3}
+                          dataKey="value"
+                        >
+                          {costPieData.map((_, i) => (
+                            <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+                          ))}
+                        </Pie>
+                        <Tooltip formatter={(v: number) => formatCurrency(v)} />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <ul className="mt-2 space-y-1 text-sm">
+                    {costPieData.map((d, i) => (
+                      <li key={d.name} className="flex items-center justify-between gap-2">
+                        <span className="flex items-center gap-2 text-muted-foreground">
+                          <span
+                            className="inline-block h-2.5 w-2.5 rounded-sm shrink-0"
+                            style={{ backgroundColor: PIE_COLORS[i % PIE_COLORS.length] }}
+                            aria-hidden="true"
+                          />
+                          {d.name}
+                        </span>
+                        <span className="tabular-nums">{formatCurrency(d.value)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </>
               ) : (
                 <p className="text-sm text-muted-foreground">No cost data available.</p>
               )}
               <div className="mt-3 space-y-1 text-sm">
                 <Row label="AI Total Cost" value={formatCurrency(comparison.total_cost_ai)} bold />
-                <Row label="AI Savings" value={
-                  <span className="text-success font-medium">{formatCurrency(comparison.total_savings)}</span>
-                } />
+                <Row
+                  label="Saving vs current practice"
+                  value={
+                    <span
+                      className={
+                        comparison.total_savings >= 0
+                          ? "text-success font-medium"
+                          : "text-destructive font-medium"
+                      }
+                    >
+                      {formatCurrency(comparison.total_savings)}
+                    </span>
+                  }
+                />
+                {comparison.total_savings < 0 && (
+                  <p className="text-xs text-muted-foreground pt-1">
+                    This order is too small to fill a container, so fixed freight
+                    is paid either way and packaging changes cannot recover it.
+                  </p>
+                )}
               </div>
             </CardContent>
           </Card>
 
           {/* Comparison table */}
-          <Card>
+          <Card className="md:col-span-2">
             <CardHeader>
               <CardTitle className="text-base flex items-center gap-2">
                 <TrendingDown className="h-5 w-5 text-primary" /> Current vs AI
@@ -438,11 +571,29 @@ export default function ResultsPage() {
                   <TableBody>
                     {comparison.rows.map((row) => (
                       <TableRow key={row.parameter_name}>
-                        <TableCell className="text-xs">{row.parameter_name}</TableCell>
-                        <TableCell className="text-right text-xs">{row.current_value.toFixed(1)}</TableCell>
-                        <TableCell className="text-right text-xs font-medium">{row.ai_value.toFixed(1)}</TableCell>
-                        <TableCell className="text-right text-xs">
-                          <span className={row.improvement_pct > 0 ? "text-success" : "text-destructive"}>
+                        <TableCell className="text-xs align-top w-1/2">
+                          <span className="font-medium">{row.parameter_name}</span>
+                          {row.driver && (
+                            // The brief asks for optimisation logic that is
+                            // "transparent and explainable". A bare percentage is
+                            // neither, so each row states why it moved.
+                            <span className="block text-[11px] text-muted-foreground leading-relaxed mt-0.5">
+                              {row.driver}
+                            </span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-right text-xs align-top">{row.current_value.toFixed(1)}</TableCell>
+                        <TableCell className="text-right text-xs font-medium align-top">{row.ai_value.toFixed(1)}</TableCell>
+                        <TableCell className="text-right text-xs align-top">
+                          <span
+                            className={
+                              row.improvement_pct > 0
+                                ? "text-success"
+                                : row.improvement_pct < 0
+                                ? "text-muted-foreground"
+                                : ""
+                            }
+                          >
                             {formatPct(row.improvement_pct)}
                           </span>
                         </TableCell>
@@ -453,25 +604,46 @@ export default function ResultsPage() {
                       <TableCell className="text-right text-xs">{formatCurrency(comparison.total_cost_current)}</TableCell>
                       <TableCell className="text-right text-xs font-bold">{formatCurrency(comparison.total_cost_ai)}</TableCell>
                       <TableCell className="text-right">
-                        <Badge variant="success" className="text-xs">
-                          Save {formatCurrency(comparison.total_savings)}
+                        <Badge
+                          variant={comparison.total_savings >= 0 ? "success" : "destructive"}
+                          className="text-xs"
+                        >
+                          {comparison.total_savings >= 0 ? "Save " : "Costs "}
+                          {formatCurrency(Math.abs(comparison.total_savings))}
                         </Badge>
                       </TableCell>
                     </TableRow>
                   </TableBody>
                 </Table>
               </div>
+
+              {/* What "Current" actually means. A savings figure with no stated
+                  basis is unfalsifiable, so the basis travels with the number. */}
+              <div className="mt-3 rounded-md border border-dashed bg-muted/40 p-3">
+                <p className="text-xs font-medium flex items-center gap-1.5">
+                  <Info className="h-3.5 w-3.5" aria-hidden="true" />
+                  {comparison.baseline_is_user_supplied
+                    ? "Compared against the figures you supplied"
+                    : "Compared against modelled conventional practice"}
+                </p>
+                {comparison.baseline_assumptions.length > 0 && (
+                  <ul className="mt-1.5 space-y-0.5 text-[10px] text-muted-foreground list-disc pl-4">
+                    {comparison.baseline_assumptions.map((a) => (
+                      <li key={a}>{a}</li>
+                    ))}
+                  </ul>
+                )}
+                <p className="mt-1.5 text-[10px] text-muted-foreground">
+                  Both sides are costed with the same physics and the same rates.
+                </p>
+              </div>
             </CardContent>
           </Card>
         </div>
       )}
-      <ChatWidget
-        contextText={
-          data
-            ? `Tea density: ${data.inputs?.tea_density} g/cm³. Package weight: ${data.inputs?.package_weight}g. Shipment: ${data.inputs?.shipment_quantity} units. Best package: ${data.best_package?.length_mm}×${data.best_package?.width_mm}×${data.best_package?.height_mm}mm, ${data.best_package?.volume_cm3} cm³, ${data.best_package?.material}. Carton: ${data.carton?.units_per_carton} units, ${data.carton?.carton_weight_kg}kg, ${data.carton?.board_grade}. Pallet: ${data.pallet?.cartons_per_pallet} cartons. Container: ${data.best_container?.container_type}, ${data.best_container?.utilization_pct}% utilization, ${data.best_container?.containers_needed} needed. Total cost: ₹${data.comparison?.total_cost_ai?.toLocaleString()}. Total savings: ₹${data.comparison?.total_savings?.toLocaleString()}.`
-            : ""
-        }
-      />
+
+      {/* The assistant loads its own facts from this ID server-side. */}
+      <ChatWidget simulationId={data.id} />
     </div>
   );
 }

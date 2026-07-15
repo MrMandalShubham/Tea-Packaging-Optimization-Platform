@@ -8,8 +8,11 @@ venv/
 .pytest_cache/
 
 # Alembic
-backend/alembic/versions/*.py
-!backend/alembic/versions/.gitkeep
+# Migrations ARE committed. They are the schema's version history: ignoring them
+# means every environment invents its own schema and they silently diverge.
+# (This file previously ignored versions/*.py, which is why the folder only ever
+# contained .gitkeep and `alembic upgrade head` had nothing to apply.)
+backend/alembic/versions/__pycache__/
 
 # Environment
 .env
@@ -35,6 +38,7 @@ pgdata/
 node_modules/
 .next/
 out/
+*.tsbuildinfo
 
 # Playwright
 playwright-report/

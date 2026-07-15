@@ -1,297 +1,327 @@
 # Tea Packaging Optimization Platform
 
-AI-powered packaging optimization for tea exporters — automatically recommends optimal pouch dimensions, master cartons, pallet layouts, and container selection.
+AI-assisted packaging optimisation for tea exporters. Given tea density, pouch
+weight and shipment size, it recommends the pouch, master carton, pallet layout
+and container that minimise **total landed cost** — and shows its working.
 
-## Overview
+On the reference shipment (0.35 g/cm³, 250 g pouches, 100,000 units) it packs
+**2 containers at 67% utilisation instead of 9**, cutting modelled cost from
+₹2,47,505 to ₹1,50,143 — a **39% saving**, with every rupee traced to a named
+decision.
 
-Tea manufacturers export thousands of cartons worldwide. Today, packaging dimensions, carton sizes, pallet layouts, and container loading are manually decided, resulting in low container utilization, high freight costs, and packaging waste.
+---
 
-This platform uses a **5-stage optimization pipeline** to compute the most cost-efficient packaging configuration:
+## The core idea
+
+The obvious way to build this is a pipeline:
 
 ```
-Tea Density → Volume → Package → Carton → Pallet → Container → Cost Comparison
+Package → Carton → Pallet → Container
 ```
 
-## Tech Stack
+That is what the brief's flowchart describes, and it does not work. Each stage
+optimises itself and silently constrains the next:
 
-| Layer | Technology |
-|---|---|
-| Frontend | Next.js 14 (App Router) + TypeScript + Tailwind CSS |
-| UI Components | Shadcn UI + Radix Primitives |
-| Charts | Recharts |
-| Backend | Python 3.12 + FastAPI |
-| Database | PostgreSQL 16 |
-| ORM | SQLAlchemy 2.0 (async) + Alembic |
-| Optimization | Custom heuristics + mathematical formulas |
-| Testing | Pytest + Playwright |
-| Infrastructure | Docker + docker-compose |
+> The carton stage maximises units per carton, hits the 25 kg limit, and produces
+> a **570 mm-tall carton**. Only 2 layers then fit under the 1.8 m pallet rule, so
+> the pallet is **1.29 m**. In a **2.39 m** container that stacks 1 high — and
+> **1.1 m of container height is bought and shipped empty.**
+>
+> Every step is locally optimal. The result is **36.9% utilisation** — the exact
+> problem the brief asks us to solve.
 
-## Quick Start
+So the stages are solved **together**. `optimizers/joint.py` enumerates complete
+configurations — pouch × carton arrangement × pallet pattern × container × pallet
+stacking — and scores each on total landed cost. A carton that holds *fewer*
+pouches wins, because it tiles the pallet at 94.9% and stacks two-high.
 
-### Prerequisites
+| | Greedy pipeline | Joint search |
+|---|---|---|
+| Container utilisation | 36.9% | **67.3%** |
+| Containers needed | 4 | **2** |
+| Freight | ₹82,500 | **₹41,250** |
 
-- Docker & Docker Compose
-- Node.js 22+ (for local frontend dev)
-- Python 3.12+ (for local backend dev)
+~15,000 configurations, evaluated exhaustively in **under a second**. So the
+result is the true optimum of the model, not an approximation — and it is
+reproducible and explainable, which a metaheuristic or an LLM guess would not be.
 
-### Option 1: Docker (recommended)
+## The comparison is the product
+
+"AI saves you 39%" is only meaningful if the number it is measured against is
+real. So the baseline is **modelled independently** (`optimizers/baseline.py`) and
+costed with the *same* physics and rates:
+
+1. **Pouch** — smallest off-the-shelf stock format that holds the tea
+2. **Carton** — stock RSC box holding the most pouches within the weight cap
+3. **Pallet** — one orientation, no rotation, stacked to 1.8 m
+4. **Container** — 20GP, floor-loaded, no double-stacking
+
+That is a *competent human constrained by catalogues* — not a strawman, because a
+strawman inflates savings just as dishonestly as a fudge factor would. The
+optimiser wins on four explainable levers: custom pouch, custom carton, rotated
+layers, double-stacking. Each comparison row carries the lever responsible in its
+`driver` field, and the UI prints the baseline's assumptions next to the savings.
+
+If you supply your real current figures, they override the model entirely and the
+comparison becomes exact.
+
+> A regression test (`test_baseline_is_not_a_fixed_ratio_of_optimised`) fails if
+> the savings ratio ever becomes suspiciously constant across different inputs —
+> the signature of a baseline that is secretly a multiplier.
+
+## Where AI is used
+
+The optimisation is deterministic arithmetic and stays that way. The LLM is used
+where a formula cannot help:
+
+- **Validation** — audits each stage against industry norms
+- **Explanation** — writes the result up for an export manager
+- **What-if assistant** — "what if I switch to plastic?" **calls the real
+  optimiser** via function-calling and reports what came back. It never estimates
+  a number, and replies whose figures came from a tool call are badged in the UI.
+
+The API key is server-side only. The browser calls `POST /api/chat`; the backend
+calls OpenAI.
+
+---
+
+## Quick start
+
+### Docker (recommended)
 
 ```bash
-git clone <repo-url>
-cd tea-packaging-optimization-platform
-
-# Start all services
+cp .env.example .env          # set POSTGRES_*, DATABASE_URL*, OPENAI_API_KEY
 docker compose up -d
-
-# Wait for backend to be ready, then:
-# Backend: http://localhost:8000
-# Swagger: http://localhost:8000/docs
-# Frontend: http://localhost:3000
+docker compose exec backend alembic upgrade head
 ```
 
-### Option 2: Local Development
+- Frontend → http://localhost:3000
+- Swagger → http://localhost:8000/docs
 
-**Backend:**
+### Local
 
 ```bash
-cd backend
-python -m venv .venv && source .venv/bin/activate  # or .venv\Scripts\activate on Windows
-pip install -r requirements.txt
-cp ../.env.example .env
-
-# Start PostgreSQL (via Docker or local)
+# Database
 docker compose up -d db
 
-# Run migrations
+# Backend
+cd backend
+python -m venv .venv && source .venv/bin/activate   # .venv\Scripts\activate on Windows
+pip install -r requirements.txt
+cp ../.env.example .env
 alembic upgrade head
-
-# Start server
 uvicorn app.main:app --reload --port 8000
-```
 
-**Frontend:**
-
-```bash
+# Frontend
 cd frontend
 npm install
 npm run dev
-# → http://localhost:3000
 ```
+
+### Environment
+
+| Variable | Where | Notes |
+|---|---|---|
+| `DATABASE_URL` | backend | `postgresql+asyncpg://…` — async driver |
+| `DATABASE_URL_SYNC` | backend | `postgresql://…` — for Alembic offline mode |
+| `OPENAI_API_KEY` | backend | **Server-side only.** Never `NEXT_PUBLIC_*`. |
+| `OPENAI_MODEL` | backend | default `gpt-4o-mini` |
+| `CORS_ORIGINS` | backend | comma-separated |
+| `AUTO_CREATE_TABLES` | backend | dev only; Alembic owns the schema |
+| `NEXT_PUBLIC_API_URL` | frontend | public — ships in the browser bundle |
+
+> Anything `NEXT_PUBLIC_*` is inlined into the JS bundle and readable by every
+> visitor. Never put a secret there.
+
+---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                   Next.js Frontend                   │
-│  /  /simulation  /compare  /history  /results/[id]  │
-│         (Shadcn UI + Tailwind + Recharts)           │
-└──────────────────────┬──────────────────────────────┘
-                       │ REST API (JSON) / Swagger
-┌──────────────────────▼──────────────────────────────┐
-│                 FastAPI Backend                      │
-│                                                      │
-│  Routers          Services          Optimizers       │
-│  ─────────        ─────────         ────────────     │
-│  /simulation      run_full_pipeline  PackageOpt      │
-│  /optimize/*      run_package_only   CartonOpt       │
-│  /compare         run_carton_only    PalletOpt       │
-│  /dashboard       run_pallet_only    ContainerOpt    │
-│                   run_container_only                 │
-│                                                      │
-│              SQLAlchemy Async (PostgreSQL)           │
-└─────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│  Next.js 14 · TypeScript · Tailwind · Shadcn · Recharts  │
+│  /  /simulation  /results/[id]  /compare  /history       │
+└───────────────────────┬──────────────────────────────────┘
+                        │ REST (JSON)
+┌───────────────────────▼──────────────────────────────────┐
+│                    FastAPI                                │
+│                                                           │
+│  routers/          services/           optimizers/        │
+│  ─────────         ─────────           ───────────        │
+│  simulation        simulation_service  joint    ← engine  │
+│  optimization      ai_service          baseline ← honesty │
+│  dashboard         seed_service        package            │
+│  chat  ← proxy                         carton             │
+│                                        pallet             │
+│                                        container          │
+│                                        constants          │
+│                                                           │
+│         SQLAlchemy 2.0 async  ·  Alembic                  │
+└───────────────────────┬──────────────────────────────────┘
+                        │
+                  PostgreSQL 16
 ```
 
-### Optimization Pipeline
+`optimizers/` are **pure functions with no database access** — which is why 150+
+tests run in ~30s without a Postgres, and why the logic is easy to reason about.
 
-**Stage 1 — Package:** Given tea density and target weight, generates 80+ dimension candidates for rectangular/cylindrical pouches. Scores by material surface area cost, fill ratio, and aspect ratio practicality.
+### Layout
 
-**Stage 2 — Carton:** Finds optimal arrangement (nx×ny×nz) of packages inside master cartons. Constraints: max 25 kg carton weight, max 800×600×600mm outer dimensions. Board grade auto-selected (3/5/7/9-ply).
+```
+backend/
+  app/
+    main.py                  FastAPI entry, lifespan, CORS
+    config.py                Pydantic settings
+    database.py              async engine + session
+    models.py                ORM: 6 reference + 9 transactional tables
+    schemas.py               Pydantic v2 DTOs
+    routers/
+      simulation.py          POST/GET /api/simulation
+      optimization.py        POST /api/optimize/{stage}
+      dashboard.py           GET /api/dashboard
+      chat.py                POST /api/chat — server-side OpenAI proxy
+    services/
+      simulation_service.py  orchestration + comparison
+      ai_service.py          validation, explanation, function-calling
+      seed_service.py        reference data from constants.py
+    optimizers/
+      joint.py               THE ENGINE — global cost search
+      baseline.py            conventional practice, modelled independently
+      package.py             pouch geometry candidates
+      carton.py              standalone carton stage
+      pallet.py              standalone pallet stage
+      container.py           standalone container stage
+      constants.py           ISO specs, rates, materials
+  alembic/versions/          migrations
+  tests/                     152 tests
+frontend/
+  app/(main)/                dashboard, simulation, results, compare, history
+  components/layout/         sidebar, chat widget
+  lib/api.ts                 typed client
+  lib/export.ts              Excel export
+  tests/                     Playwright E2E
+docs/assumptions.md          every assumption, and what would change it
+```
 
-**Stage 3 — Pallet:** Fits cartons on EUR pallets (1200×1000mm). Tries both carton orientations. Constraints: max 1.8m height, max 1000 kg load.
+---
 
-**Stage 4 — Container:** Evaluates 20GP, 40GP, and 40HC containers. Calculates pallets per container floor, utilization %, empty space, and freight cost (₹2.5/NM × 5000 NM × type factor).
-
-**Stage 5 — Compare:** Generates naive "current practice" estimate (non-optimized) and compares against AI-optimized configuration across 8 parameters.
-
-## API Endpoints
+## API
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/api/simulation` | Create & run full optimization |
-| `GET` | `/api/simulation` | List simulations (paginated) |
-| `GET` | `/api/simulation/{id}` | Get simulation with all results |
-| `POST` | `/api/optimize/package` | Run package optimization only |
-| `POST` | `/api/optimize/carton` | Run carton optimization only |
-| `POST` | `/api/optimize/pallet` | Run pallet optimization only |
-| `POST` | `/api/optimize/container` | Run container optimization only |
-| `POST` | `/api/compare` | Compare current vs AI |
-| `GET` | `/api/dashboard` | Dashboard aggregate stats |
+| `POST` | `/api/simulation` | Create & run an optimisation |
+| `GET` | `/api/simulation` | List (paginated) |
+| `GET` | `/api/simulation/{id}` | Full result |
+| `GET` | `/api/simulation/{id}/ai` | AI validation + explanation |
+| `POST` | `/api/compare` | Current vs AI |
+| `POST` | `/api/optimize/package` | Package stage only |
+| `POST` | `/api/optimize/carton` | Carton stage only |
+| `POST` | `/api/optimize/pallet` | Pallet stage only |
+| `POST` | `/api/optimize/container` | Container stage only |
+| `POST` | `/api/chat` | What-if assistant (OpenAI proxy) |
+| `GET` | `/api/reference` | Master data for form dropdowns |
+| `GET` | `/api/dashboard` | Aggregate stats |
 | `GET` | `/health` | Health check |
-| `GET` | `/docs` | Swagger UI |
-| `GET` | `/redoc` | ReDoc |
 
-Full API documentation is available at `http://localhost:8000/docs` when the backend is running.
+Interactive docs at `/docs`. The `/optimize/{stage}` endpoints run a stage in
+isolation — useful for inspection, but chaining them is exactly the greedy
+behaviour `joint.py` exists to replace.
 
-## Folder Structure
+### Two of everything, on purpose
 
-```
-tea-packaging-optimization-platform/
-├── docker-compose.yml
-├── .env.example
-├── .gitignore
-├── README.md
-│
-├── backend/
-│   ├── Dockerfile
-│   ├── requirements.txt
-│   ├── alembic.ini
-│   ├── alembic/
-│   │   ├── env.py
-│   │   └── versions/
-│   ├── app/
-│   │   ├── main.py              # FastAPI entry point
-│   │   ├── config.py            # Settings (Pydantic)
-│   │   ├── database.py          # Async engine + session
-│   │   ├── models.py            # 9 SQLAlchemy ORM models
-│   │   ├── schemas.py           # 25+ Pydantic v2 DTOs
-│   │   ├── routers/
-│   │   │   ├── simulation.py    # CRUD endpoints
-│   │   │   ├── optimization.py  # Standalone stage endpoints
-│   │   │   └── dashboard.py     # Aggregate stats
-│   │   ├── services/
-│   │   │   └── simulation_service.py  # 5-stage orchestrator
-│   │   └── optimizers/
-│   │       ├── constants.py     # ISO standards, costs, material props
-│   │       ├── package.py       # Stage 1: pouch dimensions
-│   │       ├── carton.py        # Stage 2: master carton
-│   │       ├── pallet.py        # Stage 3: pallet layout
-│   │       └── container.py     # Stage 4: container selection
-│   └── tests/
-│       ├── conftest.py
-│       ├── test_package_optimizer.py
-│       ├── test_carton_optimizer.py
-│       ├── test_pallet_optimizer.py
-│       ├── test_container_optimizer.py
-│       ├── test_pipeline.py
-│       └── test_api.py
-│
-├── frontend/
-│   ├── Dockerfile
-│   ├── package.json
-│   ├── next.config.js
-│   ├── tailwind.config.ts
-│   ├── playwright.config.ts
-│   ├── app/
-│   │   ├── layout.tsx           # Root HTML shell
-│   │   ├── globals.css          # CSS variables + print styles
-│   │   └── (main)/
-│   │       ├── layout.tsx       # Sidebar + content area
-│   │       ├── page.tsx         # Dashboard
-│   │       ├── simulation/page.tsx
-│   │       ├── compare/page.tsx
-│   │       ├── history/page.tsx
-│   │       └── results/[id]/page.tsx
-│   ├── components/
-│   │   ├── layout/sidebar.tsx   # Responsive nav sidebar
-│   │   └── ui/                  # Shadcn UI primitives
-│   ├── lib/
-│   │   ├── api.ts               # Typed API client
-│   │   └── utils.ts             # cn() utility
-│   └── tests/
-│       └── smoke.spec.ts        # Playwright E2E
-│
-└── docs/
-    └── assumptions.md           # Business assumptions
-```
+Container metrics come in pairs because they answer different questions.
+Conflating them is how an earlier version reported 64% utilisation on a
+**one-pouch order**, and made a 20GP look like it out-shipped a 40GP (it doesn't;
+it just needs five boxes instead of two).
 
-## Database Schema
+| Capacity view — one full container | Shipment view — this order |
+|---|---|
+| `cartons_per_container` | `containers_needed` |
+| `units_per_container` *(Module 6's "Total Units")* | `total_units_shipped` |
+| `capacity_utilization_pct` — packing density | `utilization_pct` — what the freight bill reflects |
+| `empty_space_per_container_m3` *(Module 6's "Empty Space")* | `empty_space_total_m3` |
+
+Package volumes likewise: `product_volume_cm3` is the tea itself (mass ÷ density,
+Module 3's "Product Volume"); `volume_cm3` is the pouch, which is larger because
+tea needs headspace.
+
+---
+
+## Database
 
 ```
-users ──< simulations ──< simulation_inputs (1:1)
-                      ──< package_options (1:N)
-                      ──< carton_configs (1:1)
-                      ──< pallet_configs (1:1)
-                      ──< container_configs (1:N)
-                      ──< comparison_results (1:N)
-                      ──< cost_summary (1:1)
+Reference (seeded from constants.py at startup, served via GET /api/reference)
+  tea_density_refs · packaging_material_refs · package_type_refs
+  package_weight_refs · board_grade_refs · container_specs · pallet_specs
+
+Transactional
+  users ──< simulations ──< simulation_inputs   (1:1)
+                        ──< package_options     (1:N)
+                        ──< carton_configs      (1:1)
+                        ──< pallet_configs      (1:1)
+                        ──< container_configs   (1:N, one per container type)
+                        ──< comparison_results  (1:N)
+                        ──< cost_summary        (1:1)
 ```
 
-## Assumptions
+Cartons store **both inner and outer** dimensions. Outer is what you buy and
+palletise; keeping only inner means the pallet and container stages stack cartons
+as though the board had no thickness.
 
-1. **Tea density range**: 0.2–0.5 g/cm³ typical; supports 0.05–5.0
-2. **Headspace**: 15% added to net volume for pouch fill
-3. **Standard pallet**: EUR/ISO 1200mm × 1000mm × 150mm, max load 1000 kg
-4. **Container interior dims**: ISO 668 standard (20GP: 5.90×2.35×2.39m, 40GP: 12.04×2.35×2.39m, 40HC: 12.04×2.35×2.70m)
-5. **Board grades**: 3-ply (≤10kg), 5-ply (≤20kg), 7-ply (≤30kg), 9-ply (>30kg)
-6. **Freight cost model**: Freight Rate (₹2.5/NM) × Default Distance (5000 NM) × Container Type Factor (20GP: 1.0, 40GP: 1.65, 40HC: 1.80)
-7. **Material costs**: Paper ₹12/m², Plastic ₹18/m², Metal ₹45/m² (INR)
-8. **"Current" estimate**: Derived as AI result degraded by 12–25% across all stages
-9. **Single user**: No authentication; default system user for all simulations
-10. **Carton weight**: Package weight × units × 1.05 (5% tare for board)
+Schema is owned by Alembic. CI fails if the models drift from the migrations.
+
+---
+
+## Screenshots
+
+In [docs/screenshots](docs/screenshots) — generated from a real run by
+`frontend/tests/screenshots.spec.ts`, so they cannot drift from what the app
+actually renders.
 
 ## Testing
 
-### Backend (Pytest)
-
 ```bash
-cd backend
-pip install -r tests/requirements-test.txt
-pytest tests/ -v
-
-# Coverage
-pip install pytest-cov
-pytest tests/ --cov=app --cov-report=term-missing
+cd backend && pytest tests/ -v          # 191 tests, ~50s, no DB needed
+cd frontend && npm run typecheck
+cd frontend && npm run test:e2e         # 21 tests; needs the app running
 ```
 
-**Test suite**: 6 files, 55+ tests covering:
-- Package optimizer (12 tests): dimensions, volume scaling, material cost, fill ratio
-- Carton optimizer (12 tests): unit count, weight limits, board grades, arrangements
-- Pallet optimizer (10 tests): layout, height/weight constraints, orientations
-- Container optimizer (12 tests): all 3 types, utilization, freight, edge cases
-- Pipeline integration (14 tests): end-to-end, savings, materials, comparison
-- API endpoints (12 tests): all stateless endpoints, validation, OpenAPI docs
+The tests assert **business outcomes**, not implementation. The previous suite
+passed 66/66 while the optimiser shipped 37%-full containers, because every test
+checked that the code did what the code did. Representative assertions now:
 
-### Frontend (Playwright)
+- `test_container_utilization_is_good` — fails below 60% packing density
+- `test_baseline_is_not_a_fixed_ratio_of_optimised` — catches a fake baseline
+- `test_baseline_carton_tiles_the_pallet` — catches a strawman baseline
+- `test_savings_stay_in_a_defensible_band` — fails if savings exceed 55%
+- `test_best_package_is_the_one_inside_the_carton` — the recommendation must be coherent
+- `test_upstream_error_does_not_leak_the_key` — no secret in any error path
+- `test_tiny_order_reports_near_zero_real_utilization` — honest metrics
 
-```bash
-cd frontend
-npx playwright install chromium
-npx playwright test
-```
+CI (`.github/workflows/ci.yml`) runs backend tests, a migration-drift check,
+frontend typecheck/lint/build, and Playwright E2E against a live stack.
 
-**E2E suite**: 7 smoke tests covering:
-- All 5 pages load
-- Sidebar navigation
-- Form field visibility
-- HTML5 form validation
-- Responsive mobile viewport
+---
 
-## Run Tests
+## Assumptions
 
-```bash
-# All backend tests (no DB required for optimizer + API tests)
-cd backend && pytest tests/ -v
+Every assumption — and what would change if the client corrected it — is in
+[docs/assumptions.md](docs/assumptions.md). The load-bearing ones:
 
-# Frontend E2E (requires running app)
-cd frontend && npx playwright test
-```
+- **Cost rates are indicative placeholders.** Absolute figures are illustrative;
+  the *relative* comparison is the meaningful output.
+- **Shipment Type semantics** are inferred: `total_weight` = whole order,
+  `per_container` = must fit one container.
+- **Pallet double-stacking is on by default** (worth ~18 utilisation points).
+  Turn it off via `Constraints` for fragile goods.
+- **Round pouches pack as their bounding box** — honest but pessimistic; ~21% of
+  the carton is unavoidably air, which is why `square` usually wins.
+- **Single user, no auth.** The `users` table and FK exist; adding auth is additive.
 
-## Key Design Decisions
+---
 
-1. **Pure computation layer**: Optimizers are stateless functions — they don't depend on DB. This makes them testable and reusable.
-2. **Heuristics over ML**: The optimization problem is more combinatorial than pattern-based. Explicit heuristics with explainable scoring is more transparent and auditable.
-3. **Type-safe API**: Frontend `lib/api.ts` mirrors backend Pydantic schemas, ensuring end-to-end type safety.
-4. **PostgreSQL over SQLite**: UUID primary keys, proper enum types, and rich querying via SQLAlchemy relationships.
-5. **Staged pipeline**: Each stage can run independently or as part of the full pipeline — enabling both standalone optimization and full-simulation workflows.
+## Known gaps
 
-## Demo
-
-1. Start all services: `docker compose up -d`
-2. Open `http://localhost:3000`
-3. Click "New Simulation"
-4. Enter: Tea Density = 0.35, Package Weight = 250g, Quantity = 100,000
-5. Click "Run Optimization"
-6. View results: best package dimensions, carton config, pallet layout, container comparison chart, cost breakdown, and savings vs current practice
-7. Try "Export PDF" to save the report
-8. Visit "Compare" to run standalone comparisons with custom current values
+Stated rather than hidden: no authentication, no mixed-SKU containers, no 3D
+visualisation, no carton compression (BCT) modelling, no real carrier freight
+quotes, and `target_market` is recorded but not yet a regulatory constraint.

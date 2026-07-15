@@ -1,5 +1,6 @@
-from pydantic_settings import BaseSettings
 from functools import lru_cache
+
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
@@ -10,6 +11,17 @@ class Settings(BaseSettings):
     database_url_sync: str = "postgresql://tea_user:tea_pass@localhost:5432/tea_packaging"
 
     secret_key: str = "change-me-in-production"
+
+    # Comma-separated list of allowed browser origins.
+    cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
+
+    # Create tables from the ORM models at startup. Development only — Alembic
+    # owns the schema everywhere else.
+    auto_create_tables: bool = True
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
     # Container interior dimensions (meters) — ISO standard
     container_20gp_l: float = 5.90

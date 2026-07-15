@@ -64,13 +64,14 @@ def _model_to_package_response(p: PackageOption) -> PackageOptionResponse:
         id=str(p.id),
         simulation_id=str(p.simulation_id),
         volume_cm3=p.volume,
+        product_volume_cm3=p.product_volume,
         length_mm=p.length,
         width_mm=p.width,
         height_mm=p.height,
         shape=p.shape,
         material=p.material,
         fill_ratio=p.fill_ratio,
-        material_usage_sqm=p.material_usage,
+        material_usage_cm2=p.material_usage,
         cost_estimate=p.cost_estimate,
         is_best=p.is_best,
         rank=p.rank,
@@ -84,9 +85,14 @@ def _model_to_carton_response(c: CartonConfig) -> CartonConfigResponse:
         length_mm=c.length,
         width_mm=c.width,
         height_mm=c.height,
+        inner_length_mm=c.inner_length,
+        inner_width_mm=c.inner_width,
+        inner_height_mm=c.inner_height,
         units_per_carton=c.units_per_carton,
+        arrangement=c.arrangement,
         carton_weight_kg=c.carton_weight,
         board_grade=c.board_grade,
+        board_cost_per_carton=c.board_cost_per_carton,
     )
 
 
@@ -99,6 +105,8 @@ def _model_to_pallet_response(p: PalletConfig) -> PalletConfigResponse:
         cartons_per_pallet=p.cartons_per_pallet,
         pallet_height_m=p.pallet_height,
         total_weight_kg=p.total_weight,
+        layer_pattern=p.layer_pattern,
+        footprint_utilization_pct=p.footprint_utilization_pct,
     )
 
 
@@ -107,10 +115,17 @@ def _model_to_container_response(c: ContainerConfig) -> ContainerConfigResponse:
         id=str(c.id),
         simulation_id=str(c.simulation_id),
         container_type=c.container_type,
+        pallets_per_container=c.pallets_per_container,
+        pallet_stack=c.pallet_stack,
         cartons_per_container=c.cartons_per_container,
+        units_per_container=c.units_per_container,
+        capacity_utilization_pct=c.capacity_utilization_pct,
+        empty_space_per_container_m3=c.empty_space_per_container_m3,
+        containers_needed=c.containers_needed,
+        total_units_shipped=c.total_units_shipped,
         utilization_pct=c.utilization_pct,
-        empty_space_m3=c.empty_space_m3,
-        total_units=c.total_units,
+        empty_space_total_m3=c.empty_space_total_m3,
+        payload_kg=c.payload_kg,
         freight_cost=c.freight_cost,
         is_best=c.is_best,
     )
@@ -165,6 +180,7 @@ async def create_simulation(body: SimulationCreateRequest, db: AsyncSession = De
                 id=new_uuid(),
                 simulation_id=sim.id,
                 volume=pkg.volume_cm3,
+                product_volume=pkg.product_volume_cm3,
                 length=pkg.length_mm,
                 width=pkg.width_mm,
                 height=pkg.height_mm,
@@ -177,18 +193,25 @@ async def create_simulation(body: SimulationCreateRequest, db: AsyncSession = De
                 rank=pkg.rank,
             ))
 
-        # 6. Save carton config
+        # 6. Save carton config — outer dims are the purchasable spec, inner is
+        #    the packing cavity; both matter downstream.
         c = result.carton
         if c:
             db.add(CartonConfig(
                 id=new_uuid(),
                 simulation_id=sim.id,
-                length=c.inner_length_mm,
-                width=c.inner_width_mm,
-                height=c.inner_height_mm,
+                length=c.outer_length_mm,
+                width=c.outer_width_mm,
+                height=c.outer_height_mm,
+                inner_length=c.inner_length_mm,
+                inner_width=c.inner_width_mm,
+                inner_height=c.inner_height_mm,
                 units_per_carton=c.units_per_carton,
+                arrangement="x".join(str(n) for n in c.arrangement),
                 carton_weight=c.carton_weight_kg,
                 board_grade=c.board_grade,
+                board_area_m2=c.board_area_m2,
+                board_cost_per_carton=c.board_cost_per_carton,
             ))
 
         # 7. Save pallet config
@@ -202,22 +225,33 @@ async def create_simulation(body: SimulationCreateRequest, db: AsyncSession = De
                 cartons_per_pallet=p.cartons_per_pallet,
                 pallet_height=p.pallet_height_m,
                 total_weight=p.total_weight_kg,
+                layer_pattern=p.layer_pattern,
+                footprint_utilization_pct=p.footprint_utilization_pct,
             ))
 
-        # 8. Save container configs
-        for ct in [result.best_container] + result.container_alternatives:
-            if ct:
-                db.add(ContainerConfig(
-                    id=new_uuid(),
-                    simulation_id=sim.id,
-                    container_type=ct.container_type,
-                    cartons_per_container=ct.cartons_per_container,
-                    utilization_pct=ct.utilization_pct,
-                    empty_space_m3=ct.empty_space_m3,
-                    total_units=ct.total_units,
-                    freight_cost=ct.total_freight_cost,
-                    is_best=ct.is_best,
-                ))
+        # 8. Save one container row per type (Module 6's 20GP/40GP/40HC compare).
+        #    Keying by type also honours the uq_sim_container constraint — the
+        #    joint search can return several configs sharing a container type.
+        for ct_key, cfg in result.configurations_by_container.items():
+            ct = cfg.container
+            db.add(ContainerConfig(
+                id=new_uuid(),
+                simulation_id=sim.id,
+                container_type=ct.container_type,
+                pallets_per_container=ct.pallets_per_container,
+                pallet_stack=ct.pallet_stack,
+                cartons_per_container=ct.cartons_per_container,
+                units_per_container=ct.units_per_container,
+                capacity_utilization_pct=ct.capacity_utilization_pct,
+                empty_space_per_container_m3=ct.empty_space_per_container_m3,
+                containers_needed=ct.containers_needed,
+                total_units_shipped=ct.total_units_shipped,
+                utilization_pct=ct.utilization_pct,
+                empty_space_total_m3=ct.empty_space_total_m3,
+                payload_kg=ct.payload_kg,
+                freight_cost=ct.total_freight_cost,
+                is_best=cfg.is_best,
+            ))
 
         # 9. Save comparison results
         for row in result.comparison:
@@ -228,15 +262,25 @@ async def create_simulation(body: SimulationCreateRequest, db: AsyncSession = De
                 current_value=row.current_value,
                 ai_value=row.ai_value,
                 improvement_pct=row.improvement_pct,
+                unit=row.unit,
+                driver=row.driver,
             ))
 
-        # 10. Save cost summary
+        # 10. Save cost summary — both sides stored explicitly
+        base = result.current
         db.add(CostSummary(
             id=new_uuid(),
             simulation_id=sim.id,
             packaging_cost=result.packaging_cost,
+            carton_cost=result.carton_cost,
             freight_cost=result.freight_cost,
             total_cost=result.total_cost,
+            baseline_packaging_cost=base.packaging_cost if base else 0.0,
+            baseline_carton_cost=base.carton_cost if base else 0.0,
+            baseline_freight_cost=base.freight_cost if base else 0.0,
+            baseline_total_cost=base.total_cost if base else 0.0,
+            baseline_assumptions="\n".join(base.assumptions) if base else None,
+            baseline_is_user_supplied=base.is_user_supplied if base else False,
             total_savings=result.total_savings,
         ))
 
@@ -382,7 +426,10 @@ async def get_simulation(simulation_id: str, db: AsyncSession = Depends(get_db))
         else:
             container_alts.append(resp)
 
-    # Comparison
+    # Comparison — baseline figures are read back from their own columns. The
+    # previous version reconstructed them as (cost − total_savings), which
+    # subtracted the whole shipment's saving from each individual cost line and
+    # so reported a different baseline on every row.
     comparison = None
     if sim.comparison_results:
         rows = [
@@ -391,21 +438,28 @@ async def get_simulation(simulation_id: str, db: AsyncSession = Depends(get_db))
                 current_value=cr.current_value,
                 ai_value=cr.ai_value,
                 improvement_pct=cr.improvement_pct,
+                unit=cr.unit or "",
+                driver=cr.driver or "",
             )
             for cr in sim.comparison_results
         ]
         cs = sim.cost_summary
-        cur_pkg = sim.comparison_results[0].current_value if sim.comparison_results else 0
         comparison = CompareResponse(
             simulation_id=str(sim.id),
             rows=rows,
-            packaging_cost_current=cs.packaging_cost - cs.total_savings if cs else 0,
+            packaging_cost_current=cs.baseline_packaging_cost if cs else 0,
             packaging_cost_ai=cs.packaging_cost if cs else 0,
-            freight_cost_current=cs.freight_cost - cs.total_savings if cs else 0,
+            carton_cost_current=cs.baseline_carton_cost if cs else 0,
+            carton_cost_ai=cs.carton_cost if cs else 0,
+            freight_cost_current=cs.baseline_freight_cost if cs else 0,
             freight_cost_ai=cs.freight_cost if cs else 0,
-            total_cost_current=(cs.total_cost - cs.total_savings) if cs else 0,
+            total_cost_current=cs.baseline_total_cost if cs else 0,
             total_cost_ai=cs.total_cost if cs else 0,
             total_savings=cs.total_savings if cs else 0,
+            baseline_assumptions=(
+                cs.baseline_assumptions.split("\n") if cs and cs.baseline_assumptions else []
+            ),
+            baseline_is_user_supplied=cs.baseline_is_user_supplied if cs else False,
         )
 
     return SimulationDetailResponse(
@@ -492,7 +546,7 @@ async def get_ai_analysis(simulation_id: str, db: AsyncSession = Depends(get_db)
         "best_container": {
             "container_type": best_ct.container_type,
             "utilization_pct": best_ct.utilization_pct,
-            "containers_needed": best_ct.cartons_per_container,
+            "containers_needed": best_ct.containers_needed,
             "total_freight_cost": best_ct.freight_cost,
         },
         "comparison": [

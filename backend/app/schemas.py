@@ -11,6 +11,13 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+from app.optimizers.constants import (
+    MAX_PACKAGE_WEIGHT_G,
+    MIN_PACKAGE_WEIGHT_G,
+    MAX_TEA_DENSITY,
+    MIN_TEA_DENSITY,
+)
+
 
 # ── Enums ────────────────────────────────────────────────────────────────────
 
@@ -48,13 +55,13 @@ class SimulationStatus(str, Enum):
 class SimulationCreateRequest(BaseModel):
     """Inputs the user provides to start a new optimization."""
     tea_density: float = Field(
-        ..., gt=0, le=5.0,
-        description="Tea density in g/cm³ (0.2–0.8 typical)",
-        examples=[0.45],
+        ..., ge=MIN_TEA_DENSITY, le=MAX_TEA_DENSITY,
+        description="Tea density in g/cm³ (0.18–0.48 typical)",
+        examples=[0.35],
     )
     package_weight: float = Field(
-        ..., gt=0, le=500.0,
-        description="Package weight in grams (e.g. 250, 500, 1000)",
+        ..., ge=MIN_PACKAGE_WEIGHT_G, le=MAX_PACKAGE_WEIGHT_G,
+        description="Net tea per pouch in grams (e.g. 250, 500, 1000)",
         examples=[250.0],
     )
     shipment_quantity: int = Field(
@@ -97,14 +104,26 @@ class PackageOptionResponse(BaseModel):
     """A single package dimension recommendation."""
     id: str
     simulation_id: str
-    volume_cm3: float = Field(validation_alias="volume")
+    volume_cm3: float = Field(
+        validation_alias="volume", description="Pouch internal volume, cm³"
+    )
+    product_volume_cm3: float = Field(
+        default=0.0,
+        validation_alias="product_volume",
+        description="The tea's own volume (mass / density), cm³ — Module 3's Product Volume",
+    )
     length_mm: float = Field(validation_alias="length")
     width_mm: float = Field(validation_alias="width")
     height_mm: float = Field(validation_alias="height")
     shape: str
     material: str
     fill_ratio: float
-    material_usage_sqm: float = Field(validation_alias="material_usage")
+    # Named for its actual unit. It was `material_usage_sqm` while carrying cm²,
+    # so the UI rendered a 527 cm² pouch as "527 m²".
+    material_usage_cm2: float = Field(
+        validation_alias="material_usage",
+        description="Pouch material consumed per unit, cm²",
+    )
     cost_estimate: float
     is_best: bool
     rank: int
@@ -120,8 +139,10 @@ class PackageOptimizeResponse(BaseModel):
 
 class PackageOptimizeRequest(BaseModel):
     """Standalone package optimization request (same fields as simulation input)."""
-    tea_density: float = Field(..., gt=0, le=5.0)
-    package_weight: float = Field(..., gt=0, le=500.0)
+    tea_density: float = Field(..., ge=MIN_TEA_DENSITY, le=MAX_TEA_DENSITY)
+    package_weight: float = Field(
+        ..., ge=MIN_PACKAGE_WEIGHT_G, le=MAX_PACKAGE_WEIGHT_G
+    )
     package_shape: PackageShape = PackageShape.square
     packaging_material: PackagingMaterial = PackagingMaterial.paper
 
@@ -131,15 +152,20 @@ class PackageOptimizeRequest(BaseModel):
 # ── Carton Optimization ───────────────────────────────────────────────────────
 
 class CartonConfigResponse(BaseModel):
-    """A carton configuration."""
+    """A carton configuration. `length/width/height` are OUTER (purchasable) dims."""
     id: str
     simulation_id: str
     length_mm: float = Field(validation_alias="length")
     width_mm: float = Field(validation_alias="width")
     height_mm: float = Field(validation_alias="height")
+    inner_length_mm: float = Field(default=0.0, validation_alias="inner_length")
+    inner_width_mm: float = Field(default=0.0, validation_alias="inner_width")
+    inner_height_mm: float = Field(default=0.0, validation_alias="inner_height")
     units_per_carton: int
+    arrangement: Optional[str] = None
     carton_weight_kg: float = Field(validation_alias="carton_weight")
     board_grade: str
+    board_cost_per_carton: Optional[float] = None
 
     model_config = {"from_attributes": True, "populate_by_name": True}
 
@@ -171,6 +197,8 @@ class PalletConfigResponse(BaseModel):
     cartons_per_pallet: int
     pallet_height_m: float = Field(validation_alias="pallet_height")
     total_weight_kg: float = Field(validation_alias="total_weight")
+    layer_pattern: Optional[str] = None
+    footprint_utilization_pct: Optional[float] = None
 
     model_config = {"from_attributes": True, "populate_by_name": True}
 
@@ -193,14 +221,40 @@ class PalletOptimizeResponse(BaseModel):
 # ── Container Optimization ────────────────────────────────────────────────────
 
 class ContainerConfigResponse(BaseModel):
-    """A container loading configuration."""
+    """
+    A container loading configuration (Module 6).
+
+    Metrics are grouped by view. `*_per_container` describes one full container;
+    the rest describes this order. See models.ContainerConfig for why the two are
+    kept apart.
+    """
     id: str
     simulation_id: str
     container_type: str
-    cartons_per_container: int
-    utilization_pct: float
-    empty_space_m3: float
-    total_units: int
+    pallets_per_container: Optional[int] = None
+    pallet_stack: Optional[int] = 1
+
+    # Capacity view — one full container
+    cartons_per_container: int = Field(description="Cartons in one full container")
+    units_per_container: int = Field(
+        description="Pouches in one full container — Module 6's 'Total Units'"
+    )
+    capacity_utilization_pct: float = Field(
+        description="Packing density of a FULL container — quality of the scheme"
+    )
+    empty_space_per_container_m3: float = Field(
+        description="Unused volume in one full container — Module 6's 'Empty Space'"
+    )
+
+    # Shipment view — this order
+    containers_needed: int = 1
+    total_units_shipped: int = Field(description="Pouches actually shipped by this order")
+    utilization_pct: float = Field(
+        description="Share of BOOKED volume holding tea — what the freight bill reflects"
+    )
+    empty_space_total_m3: float = Field(description="Unused volume across all booked containers")
+
+    payload_kg: Optional[float] = None
     freight_cost: float
     is_best: bool
 
@@ -232,8 +286,10 @@ class CompareRequest(BaseModel):
     """User-provided current values for comparison."""
     simulation_id: Optional[str] = None
     ship_quantity: int = Field(..., gt=0)
-    tea_density: float = Field(..., gt=0, le=5.0)
-    package_weight: float = Field(..., gt=0, le=500.0)
+    tea_density: float = Field(..., ge=MIN_TEA_DENSITY, le=MAX_TEA_DENSITY)
+    package_weight: float = Field(
+        ..., ge=MIN_PACKAGE_WEIGHT_G, le=MAX_PACKAGE_WEIGHT_G
+    )
     current_package_length_mm: Optional[float] = None
     current_package_width_mm: Optional[float] = None
     current_package_height_mm: Optional[float] = None
@@ -255,6 +311,11 @@ class CompareRow(BaseModel):
     current_value: float
     ai_value: float
     improvement_pct: float
+    unit: str = ""
+    driver: str = Field(
+        default="",
+        description="Why this line moved — the lever responsible, in plain English",
+    )
 
     model_config = {"from_attributes": True}
 
@@ -265,11 +326,21 @@ class CompareResponse(BaseModel):
     rows: list[CompareRow] = []
     packaging_cost_current: float = 0.0
     packaging_cost_ai: float = 0.0
+    carton_cost_current: float = 0.0
+    carton_cost_ai: float = 0.0
     freight_cost_current: float = 0.0
     freight_cost_ai: float = 0.0
     total_cost_current: float = 0.0
     total_cost_ai: float = 0.0
     total_savings: float = 0.0
+    baseline_assumptions: list[str] = Field(
+        default_factory=list,
+        description=(
+            "How the 'current practice' figures were derived. Empty when the user "
+            "supplied their own current values."
+        ),
+    )
+    baseline_is_user_supplied: bool = False
 
 
 # ── Full Simulation Detail ────────────────────────────────────────────────────
@@ -344,3 +415,106 @@ class AIAnalysisResponse(BaseModel):
     validations: list[StageValidationResponse] = []
     summary: str = ""
     error: Optional[str] = None
+
+
+# ── AI Chat ───────────────────────────────────────────────────────────────────
+
+class ChatMessage(BaseModel):
+    role: str = Field(..., pattern="^(user|assistant)$")
+    content: str = Field(..., min_length=1, max_length=4000)
+
+
+class ChatRequest(BaseModel):
+    """
+    A question for the assistant.
+
+    Note there is no field for the API key or for result context: the key lives on
+    the server, and the facts are loaded from `simulation_id` server-side so the
+    browser cannot feed the assistant invented numbers.
+    """
+
+    message: str = Field(..., min_length=1, max_length=2000)
+    simulation_id: Optional[str] = Field(
+        default=None, description="Grounds the answer in a stored simulation"
+    )
+    history: list[ChatMessage] = Field(
+        default_factory=list, max_length=20, description="Prior turns, oldest first"
+    )
+
+    model_config = {"extra": "forbid"}
+
+
+class ChatResponse(BaseModel):
+    reply: str
+    tool_calls: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Tools the assistant invoked. Non-empty means the numbers in the reply "
+            "were computed by the optimiser rather than written by the model."
+        ),
+    )
+
+
+# ── Reference data ────────────────────────────────────────────────────────────
+
+class PackageWeightOption(BaseModel):
+    grams: float
+    label: str
+    is_default: bool = False
+
+    model_config = {"from_attributes": True}
+
+
+class TeaDensityOption(BaseModel):
+    tea_type: str
+    min_density: float
+    max_density: float
+    typical_density: float
+
+    model_config = {"from_attributes": True}
+
+
+class MaterialOption(BaseModel):
+    key: str
+    name: str
+    cost_per_sqm: float
+    eco_score: float
+
+    model_config = {"from_attributes": True}
+
+
+class PackageTypeOption(BaseModel):
+    key: str
+    name: str
+    description: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+
+
+class ContainerSpecOption(BaseModel):
+    container_type: str
+    name: str
+    volume_m3: float
+    max_payload_kg: float
+
+    model_config = {"from_attributes": True}
+
+
+class ReferenceDataResponse(BaseModel):
+    """
+    Master data backing the form dropdowns.
+
+    Served from the database so the options are business data an analyst can
+    revise, rather than arrays hardcoded into the browser bundle and duplicated
+    away from the rates the costing actually uses.
+    """
+
+    package_weights: list[PackageWeightOption] = []
+    tea_densities: list[TeaDensityOption] = []
+    materials: list[MaterialOption] = []
+    package_types: list[PackageTypeOption] = []
+    containers: list[ContainerSpecOption] = []
+    min_package_weight_g: float
+    max_package_weight_g: float
+    min_tea_density: float
+    max_tea_density: float

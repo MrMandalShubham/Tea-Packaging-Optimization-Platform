@@ -34,7 +34,28 @@ class TestContainerOptimizer:
     def test_empty_space_positive(self):
         results = optimize_container(1.2, 48, 24, 100000, 380, 290, 250)
         for r in results:
-            assert r.empty_space_m3 >= 0
+            assert r.empty_space_per_container_m3 >= 0
+            assert r.empty_space_total_m3 >= 0
+
+    def test_empty_space_complements_utilisation(self):
+        """
+        Each empty-space figure must be the complement of its own utilisation.
+        Mixing the two views is the defect this vocabulary exists to prevent.
+        """
+        results = optimize_container(1.2, 48, 24, 100000, 380, 290, 250)
+        for r in results:
+            filled = r.container_volume_m3 - r.empty_space_per_container_m3
+            assert filled / r.container_volume_m3 * 100 == pytest.approx(
+                r.capacity_utilization_pct, abs=0.05
+            )
+
+    def test_capacity_and_shipment_views_are_distinct(self):
+        """A tiny order packs densely but utilises almost none of what it books."""
+        results = optimize_container(1.2, 48, 24, 100, 380, 290, 250)
+        best = results[0]
+        assert best.capacity_utilization_pct > 10
+        assert best.utilization_pct < 5
+        assert best.total_units_shipped == 100
 
     def test_freight_cost_positive(self):
         results = optimize_container(1.2, 48, 24, 100000, 380, 290, 250)
@@ -53,10 +74,18 @@ class TestContainerOptimizer:
         if gp20 and gp40:
             assert gp40.cartons_per_container > gp20.cartons_per_container
 
-    def test_total_units_covers_shipment(self):
+    def test_booked_containers_cover_the_shipment(self):
+        """
+        The containers booked must hold the whole order.
+
+        This was `total_units >= 100000`, where `total_units` meant capacity across
+        every container — a quantity that made a 20GP look like it out-shipped a
+        40GP. The real requirement is that capacity × containers covers the order.
+        """
         results = optimize_container(1.2, 48, 24, 100000, 380, 290, 250)
-        best = results[0]
-        assert best.total_units >= 100000, f"Best container ships {best.total_units}, need 100000"
+        for r in results:
+            assert r.units_per_container * r.containers_needed >= 100000
+            assert r.total_units_shipped == 100000
 
     def test_calculates_carton_volume_internally(self):
         """Should compute carton_volume_m3 from dimensions when not provided."""

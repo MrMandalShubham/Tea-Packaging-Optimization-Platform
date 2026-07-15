@@ -27,14 +27,18 @@ export interface SimulationCreateResponse {
 export interface PackageOption {
   id: string;
   simulation_id: string;
+  /** The pouch's internal volume, cm³ (includes headspace). */
   volume_cm3: number;
+  /** The tea's own volume (mass / density), cm³ — Module 3's "Product Volume". */
+  product_volume_cm3: number;
   length_mm: number;
   width_mm: number;
   height_mm: number;
   shape: string;
   material: string;
   fill_ratio: number;
-  material_usage_sqm: number;
+  /** Pouch material consumed per unit, in cm². */
+  material_usage_cm2: number;
   cost_estimate: number;
   is_best: boolean;
   rank: number;
@@ -43,12 +47,19 @@ export interface PackageOption {
 export interface CartonConfig {
   id: string;
   simulation_id: string;
+  /** Outer dimensions — the spec you buy and palletise. */
   length_mm: number;
   width_mm: number;
   height_mm: number;
+  /** Inner cavity the pouches actually pack into. */
+  inner_length_mm: number;
+  inner_width_mm: number;
+  inner_height_mm: number;
   units_per_carton: number;
+  arrangement: string | null;
   carton_weight_kg: number;
   board_grade: string;
+  board_cost_per_carton: number | null;
 }
 
 export interface PalletConfig {
@@ -59,16 +70,42 @@ export interface PalletConfig {
   cartons_per_pallet: number;
   pallet_height_m: number;
   total_weight_kg: number;
+  layer_pattern: string | null;
+  footprint_utilization_pct: number | null;
 }
 
+/**
+ * Container loading result (Module 6).
+ *
+ * Metrics belong to one of two views and are named for it. `*_per_container`
+ * describes one FULL container (the packing scheme); the rest describes THIS
+ * order (what gets booked and paid for). They are different numbers — a one-pouch
+ * order can pack densely yet utilise ~0% of the container it books.
+ */
 export interface ContainerConfig {
   id: string;
   simulation_id: string;
   container_type: string;
+  pallets_per_container: number | null;
+  pallet_stack: number | null;
+
+  // Capacity view — one full container
   cartons_per_container: number;
+  /** Pouches in one full container — Module 6's "Total Units". */
+  units_per_container: number;
+  /** Packing density of a FULL container. */
+  capacity_utilization_pct: number;
+  /** Unused volume in one full container — Module 6's "Empty Space". */
+  empty_space_per_container_m3: number;
+
+  // Shipment view — this order
+  containers_needed: number;
+  total_units_shipped: number;
+  /** Share of BOOKED volume holding tea — what the freight bill reflects. */
   utilization_pct: number;
-  empty_space_m3: number;
-  total_units: number;
+  empty_space_total_m3: number;
+
+  payload_kg: number | null;
   freight_cost: number;
   is_best: boolean;
 }
@@ -78,6 +115,9 @@ export interface CompareRow {
   current_value: number;
   ai_value: number;
   improvement_pct: number;
+  unit: string;
+  /** Why this line moved — the lever responsible, in plain English. */
+  driver: string;
 }
 
 export interface CompareResponse {
@@ -85,11 +125,16 @@ export interface CompareResponse {
   rows: CompareRow[];
   packaging_cost_current: number;
   packaging_cost_ai: number;
+  carton_cost_current: number;
+  carton_cost_ai: number;
   freight_cost_current: number;
   freight_cost_ai: number;
   total_cost_current: number;
   total_cost_ai: number;
   total_savings: number;
+  /** How the "current practice" figures were derived. */
+  baseline_assumptions: string[];
+  baseline_is_user_supplied: boolean;
 }
 
 export interface SimulationDetail {
@@ -268,13 +313,20 @@ export const api = {
   // AI Analysis
   getAIAnalysis: (simulationId: string) =>
     request<AIAnalysis>(`/api/simulation/${simulationId}/ai`),
+
+  // AI Chat — proxied server-side; no API key ever reaches the browser.
+  chat: (input: ChatRequest) =>
+    request<ChatResponse>("/api/chat", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
 };
 
 // ── AI Types ──────────────────────────────────────────────────────────────────
 
 export interface StageValidation {
   stage: string;
-  status: "valid" | "warning" | "invalid";
+  status: "valid" | "warning" | "invalid" | "unknown";
   message: string;
 }
 
@@ -283,3 +335,82 @@ export interface AIAnalysis {
   summary: string;
   error?: string;
 }
+
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface ChatRequest {
+  message: string;
+  simulation_id?: string;
+  history: ChatMessage[];
+}
+
+export interface ChatResponse {
+  reply: string;
+  /**
+   * Tools the assistant invoked. Non-empty means the numbers in the reply were
+   * computed by the optimiser rather than written by the model.
+   */
+  tool_calls: string[];
+}
+
+export const sendChatMessage = (input: ChatRequest) => api.chat(input);
+
+// ── Reference data ────────────────────────────────────────────────────────────
+
+export interface PackageWeightOption {
+  grams: number;
+  label: string;
+  is_default: boolean;
+}
+
+export interface TeaDensityOption {
+  tea_type: string;
+  min_density: number;
+  max_density: number;
+  typical_density: number;
+}
+
+export interface MaterialOption {
+  key: string;
+  name: string;
+  cost_per_sqm: number;
+  eco_score: number;
+}
+
+export interface PackageTypeOption {
+  key: string;
+  name: string;
+  description: string | null;
+}
+
+export interface ContainerSpecOption {
+  container_type: string;
+  name: string;
+  volume_m3: number;
+  max_payload_kg: number;
+}
+
+/**
+ * Master data backing the form dropdowns.
+ *
+ * Fetched rather than hardcoded: the SKUs an exporter sells and the rates the
+ * costing uses are business data, and they must not drift apart by living in two
+ * places. The bounds travel with the options so the client validates against the
+ * same limits the API enforces.
+ */
+export interface ReferenceData {
+  package_weights: PackageWeightOption[];
+  tea_densities: TeaDensityOption[];
+  materials: MaterialOption[];
+  package_types: PackageTypeOption[];
+  containers: ContainerSpecOption[];
+  min_package_weight_g: number;
+  max_package_weight_g: number;
+  min_tea_density: number;
+  max_tea_density: number;
+}
+
+export const getReferenceData = () => request<ReferenceData>("/api/reference");

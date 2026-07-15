@@ -55,8 +55,7 @@ test.describe("Form Validation", () => {
     await page.goto("/simulation");
     // Clear default values
     await page.fill("#density", "");
-    await page.fill("#weight", "");
-    await page.fill("#qty", "");
+        await page.fill("#qty", "");
     // Click submit
     await page.locator("button[type='submit']").click();
     // Should show validation (form won't submit)

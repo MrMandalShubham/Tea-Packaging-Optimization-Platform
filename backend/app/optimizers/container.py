@@ -26,18 +26,32 @@ MAX_PALLET_STACK = 1
 
 @dataclass
 class ContainerResult:
-    """Output of container optimization for a single container type."""
+    """
+    Output of container optimization for a single container type.
+
+    Field names follow the same capacity/shipment split as `joint.JointContainer`
+    — see that docstring for why. Keeping one vocabulary across both optimisers
+    means a reader never has to ask which `total_units` they are looking at.
+    """
 
     container_type: str = ""         # "20GP", "40GP", "40HC"
     container_name: str = ""
     pallets_per_container: int = 0
+
+    # Capacity view — one full container
     cartons_per_container: int = 0
-    total_units: int = 0             # total units shipped across all containers
+    units_per_container: int = 0
+    capacity_utilization_pct: float = 0.0
+    empty_space_per_container_m3: float = 0.0
+
+    # Shipment view — this order
+    containers_needed: int = 1
+    total_units_shipped: int = 0
     utilization_pct: float = 0.0
-    empty_space_m3: float = 0.0
+    empty_space_total_m3: float = 0.0
+
     freight_cost_per_container: float = 0.0   # freight cost for ONE container
     total_freight_cost: float = 0.0           # freight cost for ALL containers
-    containers_needed: int = 1
     is_best: bool = False
 
     # Detailed layout
@@ -129,16 +143,33 @@ def optimize_container(
 
         pallets_per_container = pallet_fit * pallet_stack
         cartons_per_container = pallets_per_container * cartons_per_pallet
-        total_units_per_container = cartons_per_container * units_per_carton
-
-        # Volume utilization
-        used_volume = cartons_per_container * carton_volume_m3
+        units_per_container = cartons_per_container * units_per_carton
         container_volume = ct["volume_m3"]
-        utilization_pct = round((used_volume / container_volume) * 100, 2)
-        empty_space_m3 = round(container_volume - used_volume, 3)
 
-        # How many containers needed?
-        containers_needed = math.ceil(shipment_quantity / total_units_per_container) if total_units_per_container > 0 else 1
+        # ── Capacity view: one full container ──────────────────────────────
+        capacity_volume = cartons_per_container * carton_volume_m3
+        capacity_utilization_pct = round((capacity_volume / container_volume) * 100, 2)
+        empty_per_container = round(max(container_volume - capacity_volume, 0.0), 3)
+
+        # How many containers does this order need?
+        containers_needed = (
+            math.ceil(shipment_quantity / units_per_container)
+            if units_per_container > 0
+            else 1
+        )
+
+        # ── Shipment view: what this order books ───────────────────────────
+        cartons_needed = (
+            math.ceil(shipment_quantity / units_per_carton) if units_per_carton > 0 else 0
+        )
+        booked_volume = containers_needed * container_volume
+        shipped_volume = cartons_needed * carton_volume_m3
+        utilization_pct = (
+            round(min(shipped_volume / booked_volume * 100, 100.0), 2)
+            if booked_volume > 0
+            else 0.0
+        )
+        empty_total = round(max(booked_volume - shipped_volume, 0.0), 3)
 
         # Freight cost per container (one container)
         freight_per_container = round(
@@ -153,12 +184,15 @@ def optimize_container(
             container_name=ct["name"],
             pallets_per_container=pallets_per_container,
             cartons_per_container=cartons_per_container,
-            total_units=total_units_per_container * containers_needed,
+            units_per_container=units_per_container,
+            capacity_utilization_pct=capacity_utilization_pct,
+            empty_space_per_container_m3=empty_per_container,
+            containers_needed=containers_needed,
+            total_units_shipped=shipment_quantity,
             utilization_pct=utilization_pct,
-            empty_space_m3=empty_space_m3,
+            empty_space_total_m3=empty_total,
             freight_cost_per_container=freight_per_container,
             total_freight_cost=total_freight,
-            containers_needed=containers_needed,
             pallets_lengthwise=pal_l,
             pallets_widthwise=pal_w,
             container_volume_m3=container_volume,
@@ -168,50 +202,8 @@ def optimize_container(
     if not results:
         raise ValueError("No container type can accommodate the pallets")
 
-    # Sort by utilization (desc), then freight cost (asc)
-    results.sort(key=lambda r: (-r.utilization_pct, r.total_freight_cost))
+    # Best packing density first, then cheapest freight.
+    results.sort(key=lambda r: (-r.capacity_utilization_pct, r.total_freight_cost))
     results[0].is_best = True
 
     return results
-
-
-def estimate_current_container(
-    cartons_per_pallet: int,
-    units_per_carton: int,
-    carton_volume_m3: float,
-    shipment_quantity: int,
-) -> list[ContainerResult]:
-    """
-    Naive container estimate — assumes 20GP with poor arrangement.
-    Returns a list with a single naive 20GP result.
-    """
-    ct = CONTAINERS["20GP"]
-    # Naive: fewer pallets fit (poor arrangement)
-    naive_pallets = max(1, int(10 * (cartons_per_pallet / max(1, cartons_per_pallet))))
-    cartons_per_container = naive_pallets * cartons_per_pallet
-    total_units_per = cartons_per_container * units_per_carton
-
-    used_volume = cartons_per_container * carton_volume_m3
-    utilization_pct = round((used_volume / ct["volume_m3"]) * 100, 2)
-    empty = round(ct["volume_m3"] - used_volume, 3)
-
-    containers_needed = math.ceil(shipment_quantity / total_units_per) if total_units_per > 0 else 1
-    freight_per = round(FREIGHT_RATE_PER_NM * DEFAULT_DISTANCE_NM * ct["freight_factor"], 2)
-    total_freight = round(containers_needed * freight_per, 2)
-
-    naive_result = ContainerResult(
-        container_type="20GP",
-        container_name="20-foot General Purpose (Current)",
-        pallets_per_container=naive_pallets,
-        cartons_per_container=cartons_per_container,
-        total_units=total_units_per * containers_needed,
-        utilization_pct=utilization_pct,
-        empty_space_m3=empty,
-        freight_cost_per_container=freight_per,
-        total_freight_cost=total_freight,
-        containers_needed=containers_needed,
-        is_best=True,
-        container_volume_m3=ct["volume_m3"],
-        container_max_payload_kg=ct["max_payload_kg"],
-    )
-    return [naive_result]

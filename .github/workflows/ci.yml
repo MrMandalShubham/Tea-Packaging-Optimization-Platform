@@ -1,0 +1,166 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend — tests & migrations
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: tea_user
+          POSTGRES_PASSWORD: tea_pass
+          POSTGRES_DB: tea_packaging
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tea_user -d tea_packaging"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://tea_user:tea_pass@localhost:5432/tea_packaging
+      DATABASE_URL_SYNC: postgresql://tea_user:tea_pass@localhost:5432/tea_packaging
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        working-directory: backend
+        run: |
+          pip install -r requirements.txt
+          pip install -r tests/requirements-test.txt
+
+      - name: Verify migrations apply to a clean database
+        working-directory: backend
+        run: alembic upgrade head
+
+      - name: Verify models match migrations
+        working-directory: backend
+        # Autogenerate must find nothing to do. If this fails, someone changed a
+        # model without generating the migration for it.
+        run: |
+          alembic revision --autogenerate -m "ci-drift-check" --rev-id ci_drift
+          if grep -qE "^\s+op\.(create|drop|add|alter)" alembic/versions/ci_drift_*.py; then
+            echo "::error::Models have drifted from migrations. Run 'alembic revision --autogenerate'."
+            cat alembic/versions/ci_drift_*.py
+            exit 1
+          fi
+          rm -f alembic/versions/ci_drift_*.py
+
+      - name: Run tests
+        working-directory: backend
+        run: pytest tests/ -v --cov=app --cov-report=term-missing
+
+  frontend:
+    name: Frontend — typecheck, lint & build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: frontend
+        run: npm run typecheck
+
+      - name: Lint
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+
+  e2e:
+    name: End-to-end (Playwright)
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: tea_user
+          POSTGRES_PASSWORD: tea_pass
+          POSTGRES_DB: tea_packaging
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tea_user -d tea_packaging"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://tea_user:tea_pass@localhost:5432/tea_packaging
+      DATABASE_URL_SYNC: postgresql://tea_user:tea_pass@localhost:5432/tea_packaging
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Start backend
+        working-directory: backend
+        run: |
+          pip install -r requirements.txt
+          alembic upgrade head
+          uvicorn app.main:app --host 0.0.0.0 --port 8000 &
+          for i in $(seq 1 30); do
+            curl -sf http://localhost:8000/health && break
+            sleep 1
+          done
+
+      - name: Install frontend & browsers
+        working-directory: frontend
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Run E2E tests
+        working-directory: frontend
+        run: npx playwright test
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: frontend/playwright-report/
+          retention-days: 7

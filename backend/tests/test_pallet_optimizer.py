@@ -2,7 +2,7 @@
 Tests for Stage 3: Pallet Optimizer.
 """
 import pytest
-from app.optimizers.pallet import optimize_pallet, estimate_current_pallet, PalletResult
+from app.optimizers.pallet import optimize_pallet, PalletResult
 
 
 class TestPalletOptimizer:
@@ -42,11 +42,6 @@ class TestPalletOptimizer:
         assert heavy.total_weight_kg <= 1000.0
         # Heavy may have same or fewer layers
         assert heavy.layers <= light.layers
-
-    def test_estimate_current_is_worse_than_optimized(self):
-        optimal = optimize_pallet(380, 290, 250, 18.0)
-        current = estimate_current_pallet(380, 290, 250, 18.0)
-        assert current.cartons_per_pallet <= optimal.cartons_per_pallet
 
     def test_edge_case_tiny_carton(self):
         result = optimize_pallet(100, 80, 50, 0.5)

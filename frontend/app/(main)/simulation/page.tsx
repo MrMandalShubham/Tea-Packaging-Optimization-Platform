@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { api } from "@/lib/api";
+import { api, getReferenceData, type ReferenceData } from "@/lib/api";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,12 +11,27 @@ import { Select } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { FlaskConical } from "lucide-react";
 
-const SHAPE_OPTIONS = [
+const SHIPMENT_TYPE_OPTIONS = [
+  { value: "total_weight", label: "Total Order" },
+  { value: "per_container", label: "Per Container" },
+];
+
+/**
+ * Fallbacks used only if GET /api/reference is unreachable, so the form still
+ * works against a cold backend. The database is the source of truth — these are
+ * a liferaft, not a second copy of the catalogue.
+ */
+const FALLBACK_WEIGHTS = [
+  { value: "100", label: "100 g" },
+  { value: "250", label: "250 g" },
+  { value: "500", label: "500 g" },
+  { value: "1000", label: "1 kg" },
+];
+const FALLBACK_SHAPES = [
   { value: "square", label: "Square / Rectangular" },
   { value: "round", label: "Round / Cylindrical" },
 ];
-
-const MATERIAL_OPTIONS = [
+const FALLBACK_MATERIALS = [
   { value: "paper", label: "Paper / Kraft" },
   { value: "plastic", label: "Plastic / LDPE" },
   { value: "metal", label: "Metal / Foil Laminate" },
@@ -28,12 +43,41 @@ export default function NewSimulationPage() {
     tea_density: "0.35",
     package_weight: "250",
     shipment_quantity: "100000",
+    shipment_type: "total_weight",
     package_shape: "square",
     packaging_material: "paper",
     target_market: "",
   });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [ref, setRef] = useState<ReferenceData | null>(null);
+
+  // Dropdown options and validation bounds come from the server, so the SKUs and
+  // limits offered here are the same ones the API enforces.
+  useEffect(() => {
+    getReferenceData()
+      .then((r) => {
+        setRef(r);
+        const preferred = r.package_weights.find((w) => w.is_default);
+        if (preferred) {
+          setForm((prev) => ({ ...prev, package_weight: String(preferred.grams) }));
+        }
+      })
+      .catch(() => setRef(null)); // fall back to the static lists below
+  }, []);
+
+  const weightOptions =
+    ref?.package_weights.map((w) => ({ value: String(w.grams), label: w.label })) ??
+    FALLBACK_WEIGHTS;
+  const shapeOptions =
+    ref?.package_types.map((t) => ({ value: t.key, label: t.name })) ?? FALLBACK_SHAPES;
+  const materialOptions =
+    ref?.materials.map((m) => ({ value: m.key, label: m.name })) ?? FALLBACK_MATERIALS;
+
+  const minWeight = ref?.min_package_weight_g ?? 1;
+  const maxWeight = ref?.max_package_weight_g ?? 5000;
+  const minDensity = ref?.min_tea_density ?? 0.01;
+  const maxDensity = ref?.max_tea_density ?? 5;
 
   function update(field: string, value: string) {
     setForm((prev) => ({ ...prev, [field]: value }));
@@ -48,12 +92,12 @@ export default function NewSimulationPage() {
     const weight = parseFloat(form.package_weight);
     const qty = parseInt(form.shipment_quantity);
 
-    if (!density || density <= 0 || density > 5) {
-      setError("Tea density must be between 0–5 g/cm³");
+    if (!density || density < minDensity || density > maxDensity) {
+      setError(`Tea density must be between ${minDensity}–${maxDensity} g/cm³`);
       return;
     }
-    if (!weight || weight <= 0 || weight > 500) {
-      setError("Package weight must be between 1–500 g");
+    if (!weight || weight < minWeight || weight > maxWeight) {
+      setError(`Package weight must be between ${minWeight}–${maxWeight} g`);
       return;
     }
     if (!qty || qty <= 0) {
@@ -67,7 +111,7 @@ export default function NewSimulationPage() {
         tea_density: density,
         package_weight: weight,
         shipment_quantity: qty,
-        shipment_type: "total_weight",
+        shipment_type: form.shipment_type as "total_weight" | "per_container",
         package_shape: form.package_shape as "square" | "round",
         packaging_material: form.packaging_material as "paper" | "plastic" | "metal",
         target_market: form.target_market || undefined,
@@ -113,42 +157,62 @@ export default function NewSimulationPage() {
                   id="density"
                   type="number"
                   step="0.01"
-                  min="0.1"
-                  max="5"
+                  min={minDensity}
+                  max={maxDensity}
                   value={form.tea_density}
                   onChange={(e) => update("tea_density", e.target.value)}
                   required
                 />
                 <p className="text-xs text-muted-foreground">
-                  Typical: black 0.30–0.42, green 0.28–0.38
+                  {ref?.tea_densities.length
+                    ? ref.tea_densities
+                        .slice(0, 2)
+                        .map((d) => `${d.tea_type.replace(/_/g, " ")} ${d.min_density}–${d.max_density}`)
+                        .join(", ")
+                    : "Typical: black 0.30–0.42, green 0.28–0.38"}
                 </p>
               </div>
               <div className="space-y-2">
-                <Label htmlFor="weight">Package Weight (g)</Label>
-                <Input
+                <Label htmlFor="weight">Package Weight</Label>
+                {/* A dropdown of real SKUs, per the brief. Options are served from
+                    the package_weight_refs table rather than hardcoded here, so
+                    the catalogue stays revisable without a redeploy. */}
+                <Select
                   id="weight"
-                  type="number"
-                  step="1"
-                  min="1"
-                  max="500"
+                  options={weightOptions}
                   value={form.package_weight}
                   onChange={(e) => update("package_weight", e.target.value)}
-                  required
                 />
-                <p className="text-xs text-muted-foreground">e.g. 250g, 500g pouch</p>
+                <p className="text-xs text-muted-foreground">Net tea per pouch</p>
               </div>
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="qty">Shipment Quantity (units)</Label>
-              <Input
-                id="qty"
-                type="number"
-                min="1"
-                value={form.shipment_quantity}
-                onChange={(e) => update("shipment_quantity", e.target.value)}
-                required
-              />
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="qty">Shipment Quantity (units)</Label>
+                <Input
+                  id="qty"
+                  type="number"
+                  min="1"
+                  value={form.shipment_quantity}
+                  onChange={(e) => update("shipment_quantity", e.target.value)}
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="shipmentType">Shipment Type</Label>
+                <Select
+                  id="shipmentType"
+                  options={SHIPMENT_TYPE_OPTIONS}
+                  value={form.shipment_type}
+                  onChange={(e) => update("shipment_type", e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  {form.shipment_type === "per_container"
+                    ? "Must fit in a single container"
+                    : "Uses as many containers as needed"}
+                </p>
+              </div>
             </div>
 
             <div className="grid grid-cols-2 gap-4">
@@ -156,7 +220,7 @@ export default function NewSimulationPage() {
                 <Label htmlFor="shape">Package Shape</Label>
                 <Select
                   id="shape"
-                  options={SHAPE_OPTIONS}
+                  options={shapeOptions}
                   value={form.package_shape}
                   onChange={(e) => update("package_shape", e.target.value)}
                 />
@@ -165,7 +229,7 @@ export default function NewSimulationPage() {
                 <Label htmlFor="material">Packaging Material</Label>
                 <Select
                   id="material"
-                  options={MATERIAL_OPTIONS}
+                  options={materialOptions}
                   value={form.packaging_material}
                   onChange={(e) => update("packaging_material", e.target.value)}
                 />
