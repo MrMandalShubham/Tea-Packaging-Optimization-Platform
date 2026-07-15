@@ -1,0 +1,51 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: tea_packaging_db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tea_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tea_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-tea_packaging}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tea_user} -d ${POSTGRES_DB:-tea_packaging}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: ./backend
+    container_name: tea_packaging_api
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-tea_user}:${POSTGRES_PASSWORD:-tea_pass}@db:5432/${POSTGRES_DB:-tea_packaging}
+      DATABASE_URL_SYNC: postgresql://${POSTGRES_USER:-tea_user}:${POSTGRES_PASSWORD:-tea_pass}@db:5432/${POSTGRES_DB:-tea_packaging}
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  frontend:
+    build: ./frontend
+    container_name: tea_packaging_ui
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    command: npm run dev
+
+volumes:
+  pgdata:
