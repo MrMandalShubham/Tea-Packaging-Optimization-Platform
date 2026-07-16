@@ -470,47 +470,88 @@ async def _run_validation(data: dict, api_key: str, model: str) -> list[StageVal
 
 
 async def _run_explanation(data: dict, api_key: str, model: str) -> str:
-    """Ask the model to write the result up for an export manager."""
+    """
+    Ask the model for a short, plain-language brief a non-expert can act on.
+
+    The earlier prompt asked for "four paragraphs written to an export manager",
+    which produced a formal letter — "Dear [Export Manager's Name]", filler like
+    "enhances our brand image", and a sign-off with [Your Name] placeholders.
+    Useless. This asks for a scannable brief in everyday words, in a fixed shape
+    the UI can render cleanly, and forbids the letter furniture explicitly.
+    """
     pkg = data.get("best_package", {})
     carton = data.get("carton", {})
     pallet = data.get("pallet", {})
     container = data.get("best_container", {})
     comparison = data.get("comparison", [])
 
-    comp_text = "\n".join(
+    # Give the model the plain cause→effect for each line so it explains rather
+    # than invents. It should paraphrase these, not restate the raw numbers.
+    drivers = "\n".join(
         f"- {r.get('parameter_name')}: {r.get('current_value')} -> {r.get('ai_value')} "
-        f"({r.get('improvement_pct', 0):+.1f}%) because {r.get('driver', 'n/a')}"
+        f"({r.get('improvement_pct', 0):+.1f}%) — {r.get('driver', '')}"
         for r in comparison
     )
 
-    prompt = (
-        "You are an expert tea packaging consultant writing to an export manager. "
-        "Four paragraphs. Every paragraph must contain specific numbers. Use Rs. for "
-        "currency.\n\n"
-        f"1) PACKAGE — {pkg.get('length_mm')}x{pkg.get('width_mm')}x{pkg.get('height_mm')} mm, "
-        f"{pkg.get('volume_cm3')} cm3, fill ratio {pkg.get('fill_ratio')}, "
-        f"{pkg.get('material')}. Explain how this minimises material per pouch.\n\n"
-        f"2) CARTON & PALLET — {carton.get('units_per_carton')} pouches per carton, "
-        f"{carton.get('outer_length_mm')}x{carton.get('outer_width_mm')}"
-        f"x{carton.get('outer_height_mm')} mm, {carton.get('carton_weight_kg')} kg, "
-        f"{carton.get('board_grade')}. Pallet {pallet.get('cartons_per_layer')}/layer x "
-        f"{pallet.get('layers')} layers = {pallet.get('cartons_per_pallet')} cartons at "
-        f"{pallet.get('pallet_height_m')} m, using {pallet.get('footprint_utilization_pct')}% "
-        f"of the pallet footprint. Explain why a smaller carton can beat a fuller one: "
-        f"it tiles the pallet and stacks better.\n\n"
-        f"3) CONTAINER — {container.get('container_type')}, "
-        f"{container.get('containers_needed')} needed, packing density "
-        f"{container.get('capacity_utilization_pct')}%, pallets stacked "
-        f"{container.get('pallet_stack')} high. Explain why this beat the other types.\n\n"
-        f"4) SAVINGS — AI total Rs.{data.get('total_cost', 0):,.0f} vs current practice "
-        f"Rs.{data.get('baseline_total_cost', 0):,.0f}, saving "
-        f"Rs.{data.get('total_savings', 0):,.0f}. Line by line:\n{comp_text}\n"
-        f"Note that the comparison is against a modelled conventional setup "
-        f"(catalogue pouch, stock carton, single-orientation pallet, 20GP floor-loaded), "
-        f"not against a deliberately bad strawman. Close with a recommendation."
+    total = data.get("total_cost", 0)
+    base = data.get("baseline_total_cost", 0)
+    saving = data.get("total_savings", 0)
+    saving_pct = (saving / base * 100) if base else 0
+    weight_kg = carton.get("carton_weight_kg", 0)
+    lift_note = "one person can lift it" if weight_kg and weight_kg <= 20 else (
+        "needs two people or a trolley" if weight_kg else ""
     )
 
-    return (await _call_openai(prompt, api_key, model, max_tokens=700)).strip()
+    prompt = (
+        "You are explaining a tea packaging plan to a busy operations team — "
+        "warehouse, packing, dispatch. Many are not native English speakers and "
+        "none are packaging engineers. Write so a shop-floor supervisor gets it on "
+        "the first read.\n\n"
+        "STRICT STYLE:\n"
+        "- NO letter. No 'Dear', no greeting, no sign-off, no [placeholders], no "
+        "  company/brand talk. Start straight at the first heading.\n"
+        "- Short sentences. Everyday words. If you must use a term like 'pallet "
+        "  footprint', add three words of plain meaning.\n"
+        "- Every claim gets a number from the data below. Invent nothing.\n"
+        "- Use Rs for money. Keep the whole thing under 180 words.\n\n"
+        "OUTPUT EXACTLY THESE FOUR SECTIONS, each heading on its own line wrapped "
+        "in double asterisks, each point a line starting with '- ':\n\n"
+        "**The plan**\n"
+        "One or two lines: the pouch, how many per box, which container, and the "
+        "saving as both Rs and %.\n\n"
+        "**Why it's cheaper**\n"
+        "3 bullets. Plain cause and effect. A smaller box that holds fewer pouches "
+        "can still win because it stacks tighter and fills fewer containers — say "
+        "it simply.\n\n"
+        "**What the team should know**\n"
+        "Exactly 3 bullets a packer or loader needs, in this order and kept "
+        "separate so nothing is confused:\n"
+        "  (a) box weight, and whether one person can lift it;\n"
+        "  (b) how many boxes go on ONE pallet, and how tall that loaded pallet "
+        "is in metres;\n"
+        "  (c) how many containers, and whether whole PALLETS are stacked "
+        "two-high inside the container (this is about pallets, not boxes).\n\n"
+        "**Good to know**\n"
+        "1 bullet: the Rs figures use standard market rates, so the % saving is the "
+        "reliable part; exact rupees depend on the client's real prices.\n\n"
+        "── DATA ──\n"
+        f"Pouch: {pkg.get('length_mm')}x{pkg.get('width_mm')}x{pkg.get('height_mm')} mm, "
+        f"{pkg.get('material')}, {pkg.get('shape')}.\n"
+        f"Box: holds {carton.get('units_per_carton')} pouches, weighs "
+        f"{weight_kg} kg ({lift_note}), {carton.get('board_grade')} board.\n"
+        f"Pallet: {pallet.get('cartons_per_pallet')} boxes, "
+        f"{pallet.get('pallet_height_m')} m tall.\n"
+        f"Container: {container.get('containers_needed')} x "
+        f"{container.get('container_type')}, pallets stacked "
+        f"{container.get('pallet_stack')} high, "
+        f"{container.get('capacity_utilization_pct')}% full by volume "
+        f"(tea is light, so a part-full-by-volume container is normal and expected).\n"
+        f"Money: new plan Rs {total:,.0f} vs current practice Rs {base:,.0f}. "
+        f"Saving Rs {saving:,.0f} ({saving_pct:.0f}%).\n"
+        f"What changed and why:\n{drivers}\n"
+    )
+
+    return (await _call_openai(prompt, api_key, model, max_tokens=500)).strip()
 
 
 # ── Transport ─────────────────────────────────────────────────────────────────

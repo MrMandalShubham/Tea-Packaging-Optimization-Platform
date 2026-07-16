@@ -236,7 +236,7 @@ export default function ResultsPage() {
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <p className="text-sm text-purple-900 whitespace-pre-line leading-relaxed">{ai.summary}</p>
+                <AiBrief text={ai.summary} />
               </CardContent>
             </Card>
           )}
@@ -669,4 +669,74 @@ function Row({
       <span className={bold ? "font-semibold" : ""}>{value}</span>
     </div>
   );
+}
+
+// ── Minimal markdown for the AI brief ────────────────────────────────────────
+// The model returns `**Heading**` lines and `- ` bullets. This renders them as
+// real headings and lists instead of literal asterisks — no markdown library,
+// no dangerouslySetInnerHTML, just a small line parser building React nodes.
+
+function boldInline(text: string): React.ReactNode {
+  // Split on **...** and bold the captured parts.
+  return text.split(/(\*\*[^*]+\*\*)/g).map((part, i) =>
+    part.startsWith("**") && part.endsWith("**") ? (
+      <strong key={i}>{part.slice(2, -2)}</strong>
+    ) : (
+      part
+    )
+  );
+}
+
+function AiBrief({ text }: { text: string }) {
+  const lines = text.split("\n");
+  const nodes: React.ReactNode[] = [];
+  let bullets: string[] = [];
+
+  const flushBullets = () => {
+    if (!bullets.length) return;
+    nodes.push(
+      <ul key={`ul-${nodes.length}`} className="ml-1 space-y-1">
+        {bullets.map((b, i) => (
+          <li key={i} className="flex gap-2">
+            <span aria-hidden className="mt-[2px] text-purple-400">
+              •
+            </span>
+            <span>{boldInline(b)}</span>
+          </li>
+        ))}
+      </ul>
+    );
+    bullets = [];
+  };
+
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) {
+      flushBullets();
+      continue;
+    }
+    // A whole-line heading: **like this**
+    if (/^\*\*[^*]+\*\*$/.test(line)) {
+      flushBullets();
+      nodes.push(
+        <p key={`h-${nodes.length}`} className="font-semibold text-purple-900 mt-3 first:mt-0">
+          {line.slice(2, -2)}
+        </p>
+      );
+      continue;
+    }
+    if (line.startsWith("- ") || line.startsWith("• ")) {
+      bullets.push(line.slice(2));
+      continue;
+    }
+    flushBullets();
+    nodes.push(
+      <p key={`p-${nodes.length}`} className="leading-relaxed">
+        {boldInline(line)}
+      </p>
+    );
+  }
+  flushBullets();
+
+  return <div className="space-y-1.5 text-sm text-purple-900">{nodes}</div>;
 }

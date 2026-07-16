@@ -621,6 +621,15 @@ async def get_ai_analysis(simulation_id: str, db: AsyncSession = Depends(get_db)
     if not best_pkg or not best_ct:
         raise HTTPException(status_code=400, detail="Simulation has no optimization results")
 
+    # Every key here is read by a prompt in ai_service. This dict had drifted
+    # from those prompts after the metric rename: it sent `inner_*` carton keys
+    # the prompts no longer read and omitted capacity_utilization_pct,
+    # pallet_stack, footprint_utilization_pct and baseline_total_cost. The result
+    # was the validator declaring a perfectly good container "invalid — packing
+    # density not specified". Keep this in step with the prompts.
+    carton = sim.carton_config
+    pallet = sim.pallet_config
+    cs = sim.cost_summary
     pipeline_data = {
         "tea_density": sim.inputs.tea_density if sim.inputs else 0,
         "package_weight": sim.inputs.package_weight if sim.inputs else 0,
@@ -635,24 +644,33 @@ async def get_ai_analysis(simulation_id: str, db: AsyncSession = Depends(get_db)
             "shape": best_pkg.shape,
         },
         "carton": {
-            "inner_length_mm": sim.carton_config.length if sim.carton_config else 0,
-            "inner_width_mm": sim.carton_config.width if sim.carton_config else 0,
-            "inner_height_mm": sim.carton_config.height if sim.carton_config else 0,
-            "units_per_carton": sim.carton_config.units_per_carton if sim.carton_config else 0,
-            "carton_weight_kg": sim.carton_config.carton_weight if sim.carton_config else 0,
-            "board_grade": sim.carton_config.board_grade if sim.carton_config else "",
+            # `.length/.width/.height` are the OUTER dims; inner is stored
+            # separately. The prompts ask for outer, since that is what is stacked.
+            "outer_length_mm": carton.length if carton else 0,
+            "outer_width_mm": carton.width if carton else 0,
+            "outer_height_mm": carton.height if carton else 0,
+            "inner_length_mm": carton.inner_length if carton else 0,
+            "inner_width_mm": carton.inner_width if carton else 0,
+            "inner_height_mm": carton.inner_height if carton else 0,
+            "units_per_carton": carton.units_per_carton if carton else 0,
+            "carton_weight_kg": carton.carton_weight if carton else 0,
+            "board_grade": carton.board_grade if carton else "",
         },
         "pallet": {
-            "cartons_per_layer": sim.pallet_config.cartons_per_layer if sim.pallet_config else 0,
-            "layers": sim.pallet_config.layers if sim.pallet_config else 0,
-            "cartons_per_pallet": sim.pallet_config.cartons_per_pallet if sim.pallet_config else 0,
-            "pallet_height_m": sim.pallet_config.pallet_height if sim.pallet_config else 0,
-            "total_weight_kg": sim.pallet_config.total_weight if sim.pallet_config else 0,
+            "cartons_per_layer": pallet.cartons_per_layer if pallet else 0,
+            "layers": pallet.layers if pallet else 0,
+            "cartons_per_pallet": pallet.cartons_per_pallet if pallet else 0,
+            "pallet_height_m": pallet.pallet_height if pallet else 0,
+            "total_weight_kg": pallet.total_weight if pallet else 0,
+            "footprint_utilization_pct": pallet.footprint_utilization_pct if pallet else 0,
+            "layer_pattern": pallet.layer_pattern if pallet else "",
         },
         "best_container": {
             "container_type": best_ct.container_type,
             "utilization_pct": best_ct.utilization_pct,
+            "capacity_utilization_pct": best_ct.capacity_utilization_pct,
             "containers_needed": best_ct.containers_needed,
+            "pallet_stack": best_ct.pallet_stack,
             "total_freight_cost": best_ct.freight_cost,
         },
         "comparison": [
@@ -661,11 +679,13 @@ async def get_ai_analysis(simulation_id: str, db: AsyncSession = Depends(get_db)
                 "current_value": cr.current_value,
                 "ai_value": cr.ai_value,
                 "improvement_pct": cr.improvement_pct,
+                "driver": cr.driver or "",
             }
             for cr in sim.comparison_results
         ],
-        "total_cost": sim.cost_summary.total_cost if sim.cost_summary else 0,
-        "total_savings": sim.cost_summary.total_savings if sim.cost_summary else 0,
+        "total_cost": cs.total_cost if cs else 0,
+        "baseline_total_cost": cs.baseline_total_cost if cs else 0,
+        "total_savings": cs.total_savings if cs else 0,
     }
 
     analysis = await analyze_results(pipeline_data)
