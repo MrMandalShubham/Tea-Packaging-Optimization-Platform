@@ -24,8 +24,13 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL}
       DATABASE_URL_SYNC: ${DATABASE_URL_SYNC}
-      OPENAI_API_KEY: ${OPENAI_API_KEY}
-      OPENAI_MODEL: ${OPENAI_MODEL}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      # Alembic owns the schema here, as it does in production. Leaving this on
+      # would let the app create its own tables and quietly paper over a broken
+      # migration — which is exactly what happened: `alembic upgrade head` failed
+      # while the API served requests happily against create_all's tables.
+      AUTO_CREATE_TABLES: "false"
     ports:
       - "8000:8000"
     depends_on:
@@ -33,7 +38,11 @@ services:
         condition: service_healthy
     volumes:
       - ./backend:/app
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    # Migrate, then serve. `docker compose up` should produce a working app; a
+    # README that says "now remember to run migrations" is a step to forget.
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
 
   frontend:
     build:

@@ -104,11 +104,17 @@ calls OpenAI.
 ```bash
 cp .env.example .env          # set POSTGRES_*, DATABASE_URL*, OPENAI_API_KEY
 docker compose up -d
-docker compose exec backend alembic upgrade head
 ```
+
+That's the whole thing — the backend runs `alembic upgrade head` before serving,
+and reference data seeds on startup.
 
 - Frontend → http://localhost:3000
 - Swagger → http://localhost:8000/docs
+- Health → http://localhost:8000/health
+
+`OPENAI_API_KEY` is optional: everything except the AI assistant and the
+explanation panel works without it, since the optimisation is arithmetic.
 
 ### Local
 

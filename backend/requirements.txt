@@ -6,6 +6,9 @@ alembic==1.14.0
 pydantic==2.10.3
 pydantic-settings==2.7.0
 python-dotenv==1.0.1
-scipy==1.14.1
-numpy==2.2.0
 httpx==0.28.1
+
+# NOTE: scipy and numpy were listed here but nothing imports them — the brief
+# mentions SciPy as one option for the optimisation, and the search turned out to
+# be pure integer arithmetic that needs neither. They cost ~100 MB in the image
+# and a slower build, so they are gone. Add them back the day something uses them.
