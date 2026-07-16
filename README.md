@@ -5,9 +5,9 @@ weight and shipment size, it recommends the pouch, master carton, pallet layout
 and container that minimise **total landed cost** — and shows its working.
 
 On the reference shipment (0.35 g/cm³, 250 g pouches, 100,000 units) it packs
-**2 containers at 67% utilisation instead of 9**, cutting modelled cost from
-₹2,47,505 to ₹1,50,143 — a **39% saving**, with every rupee traced to a named
-decision.
+**2 containers at 67% utilisation instead of 7**, cutting modelled cost from
+₹2,03,060 to ₹1,50,143 — a **26% saving**, with every rupee traced to a named
+decision. Across the SKU range the saving runs **26–50%**.
 
 ---
 
@@ -41,33 +41,45 @@ pouches wins, because it tiles the pallet at 94.9% and stacks two-high.
 | Containers needed | 4 | **2** |
 | Freight | ₹82,500 | **₹41,250** |
 
+(That table compares the two *optimisers* on identical inputs. The 26% headline
+saving above is against modelled current practice, which is a different and
+harder yardstick.)
+
 ~15,000 configurations, evaluated exhaustively in **under a second**. So the
 result is the true optimum of the model, not an approximation — and it is
 reproducible and explainable, which a metaheuristic or an LLM guess would not be.
 
 ## The comparison is the product
 
-"AI saves you 39%" is only meaningful if the number it is measured against is
+"AI saves you 26%" is only meaningful if the number it is measured against is
 real. So the baseline is **modelled independently** (`optimizers/baseline.py`) and
 costed with the *same* physics and rates:
 
 1. **Pouch** — smallest off-the-shelf stock format that holds the tea
-2. **Carton** — stock RSC box holding the most pouches within the weight cap
-3. **Pallet** — one orientation, no rotation, stacked to 1.8 m
-4. **Container** — 20GP, floor-loaded, no double-stacking
+2. **Carton** — stock RSC box giving the most tea **per pallet**, within the
+   weight cap. Not the box with the most pouches in it: 600×400 and 400×300 are
+   standard sizes *because* they are pallet-modular
+3. **Pallet** — uniform layers, rotated whichever way fits more; orientations not
+   *mixed* within a layer; stacked to 1.8 m
+4. **Container** — 20GP by habit, floor-loaded, no double-stacking. Pallets *are*
+   rotated to fit the floor, using the same geometry the optimiser uses
 
 That is a *competent human constrained by catalogues* — not a strawman, because a
 strawman inflates savings just as dishonestly as a fudge factor would. The
-optimiser wins on four explainable levers: custom pouch, custom carton, rotated
-layers, double-stacking. Each comparison row carries the lever responsible in its
-`driver` field, and the UI prints the baseline's assumptions next to the savings.
+optimiser wins on four explainable levers: custom pouch, custom carton, **mixed**
+layer patterns, and double-stacking. Each comparison row carries the lever
+responsible in its `driver` field, and the UI prints the baseline's assumptions
+next to the savings.
 
 If you supply your real current figures, they override the model entirely and the
 comparison becomes exact.
 
-> A regression test (`test_baseline_is_not_a_fixed_ratio_of_optimised`) fails if
-> the savings ratio ever becomes suspiciously constant across different inputs —
-> the signature of a baseline that is secretly a multiplier.
+> Two regression tests guard this. `test_baseline_is_not_a_fixed_ratio_of_optimised`
+> fails if the savings ratio becomes suspiciously constant across inputs — the
+> signature of a multiplier in disguise. `test_savings_stay_in_a_defensible_band`
+> fails above 55%: three modelling errors once put it at 39–61%, and a 60% claim
+> would not survive the first question from a packaging engineer. See
+> [docs/assumptions.md §5](docs/assumptions.md) for what those errors were.
 
 ## Where AI is used
 
@@ -139,7 +151,7 @@ npm run dev
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│  Next.js 14 · TypeScript · Tailwind · Shadcn · Recharts  │
+│ Next.js 14 · TS · Tailwind · Shadcn · Recharts · three.js │
 │  /  /simulation  /results/[id]  /compare  /history       │
 └───────────────────────┬──────────────────────────────────┘
                         │ REST (JSON)
@@ -173,13 +185,14 @@ backend/
     main.py                  FastAPI entry, lifespan, CORS
     config.py                Pydantic settings
     database.py              async engine + session
-    models.py                ORM: 6 reference + 9 transactional tables
+    models.py                ORM: 7 reference + 9 transactional tables
     schemas.py               Pydantic v2 DTOs
     routers/
       simulation.py          POST/GET /api/simulation
       optimization.py        POST /api/optimize/{stage}
       dashboard.py           GET /api/dashboard
       chat.py                POST /api/chat — server-side OpenAI proxy
+      reference.py           GET /api/reference — dropdown master data
     services/
       simulation_service.py  orchestration + comparison
       ai_service.py          validation, explanation, function-calling
@@ -197,8 +210,10 @@ backend/
 frontend/
   app/(main)/                dashboard, simulation, results, compare, history
   components/layout/         sidebar, chat widget
+  components/viz/            3D container load (lazy-loaded three.js)
   lib/api.ts                 typed client
   lib/export.ts              Excel export
+  lib/load-plan.ts           load-plan geometry — pure, testable, no three.js
   tests/                     Playwright E2E
 docs/assumptions.md          every assumption, and what would change it
 ```
@@ -218,6 +233,7 @@ docs/assumptions.md          every assumption, and what would change it
 | `POST` | `/api/optimize/carton` | Carton stage only |
 | `POST` | `/api/optimize/pallet` | Pallet stage only |
 | `POST` | `/api/optimize/container` | Container stage only |
+| `GET` | `/api/simulation/{id}/layout` | Load plan for the 3D view |
 | `POST` | `/api/chat` | What-if assistant (OpenAI proxy) |
 | `GET` | `/api/reference` | Master data for form dropdowns |
 | `GET` | `/api/dashboard` | Aggregate stats |
@@ -244,6 +260,27 @@ it just needs five boxes instead of two).
 Package volumes likewise: `product_volume_cm3` is the tea itself (mass ÷ density,
 Module 3's "Product Volume"); `volume_cm3` is the pouch, which is larger because
 tea needs headspace.
+
+### 3D container load
+
+`/layout` returns the load plan the optimiser actually computed — **not** a
+plausible-looking arrangement. `fit_rectangles` used to return only `(count,
+pattern)`, which meant a viewer had to guess where cartons went, and for a `mixed`
+pattern it could not: *"12 per layer"* does not say where the twelfth one sits.
+It now returns real placements.
+
+The payload is a **recipe**, not a dump: one pallet layer + one container floor +
+repeat counts. **1,940 bytes describes 1,440 cartons.** The browser composes the
+load by pure translation and never re-derives a packing.
+
+The geometry is checked against physics rather than a screenshot
+(`frontend/tests/load-plan.spec.ts`): nothing overlaps, nothing leaves the
+container, cartons sit on their deck, and the composed count equals the number on
+the results page. A misplaced carton looks exactly like a correct one, so it has
+to be tested rather than eyeballed.
+
+three.js is lazy-loaded on click (~600 KB) and cartons render as a single
+instanced mesh — 1,440 individual meshes would not be viable.
 
 ---
 
@@ -281,9 +318,9 @@ actually renders.
 ## Testing
 
 ```bash
-cd backend && pytest tests/ -v          # 191 tests, ~50s, no DB needed
+cd backend && pytest tests/ -v          # 205 tests, no DB needed
 cd frontend && npm run typecheck
-cd frontend && npm run test:e2e         # 21 tests; needs the app running
+cd frontend && npm run test:e2e         # 30 tests; needs the app running
 ```
 
 The tests assert **business outcomes**, not implementation. The previous suite
@@ -297,6 +334,7 @@ checked that the code did what the code did. Representative assertions now:
 - `test_best_package_is_the_one_inside_the_carton` — the recommendation must be coherent
 - `test_upstream_error_does_not_leak_the_key` — no secret in any error path
 - `test_tiny_order_reports_near_zero_real_utilization` — honest metrics
+- `load-plan.spec.ts` — the 3D view's cartons must not overlap or escape the container
 
 CI (`.github/workflows/ci.yml`) runs backend tests, a migration-drift check,
 frontend typecheck/lint/build, and Playwright E2E against a live stack.
@@ -322,6 +360,7 @@ Every assumption — and what would change if the client corrected it — is in
 
 ## Known gaps
 
-Stated rather than hidden: no authentication, no mixed-SKU containers, no 3D
-visualisation, no carton compression (BCT) modelling, no real carrier freight
-quotes, and `target_market` is recorded but not yet a regulatory constraint.
+Stated rather than hidden: no authentication, no mixed-SKU containers, no carton
+compression (BCT) modelling, no real carrier freight quotes, and `target_market`
+is recorded but not yet a regulatory constraint. "Export to PDF" is the browser's
+print dialog, not generated PDF.

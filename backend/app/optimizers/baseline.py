@@ -371,10 +371,10 @@ def compute_baseline(
     # the container type on cost rather than habit.
     ct = CONTAINERS[BASELINE_CONTAINER]
     r.container_type = BASELINE_CONTAINER
-    floor_fit, _ = fit_rectangles(
+    floor = fit_rectangles(
         PALLET_L_MM, PALLET_W_MM, ct["internal_l"] * 1000, ct["internal_w"] * 1000
     )
-    r.pallets_per_container = max(floor_fit, 1)
+    r.pallets_per_container = max(floor.count, 1)
     r.assumptions.append(
         f"{BASELINE_CONTAINER} floor-loaded with {r.pallets_per_container} pallets; "
         f"pallets not double-stacked."

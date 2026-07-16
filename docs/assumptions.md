@@ -274,7 +274,28 @@ Doing so needs a specification from the client on which markets impose what.
 
 ---
 
-## 7. Scope not implemented
+## 7. The 3D load plan
+
+`GET /api/simulation/{id}/layout` returns the arrangement the optimiser actually
+computed, not a plausible-looking one.
+
+- **Recomputed, not stored.** Packing is a pure function of the stored dimensions,
+  so recomputing cannot drift from the saved result and costs no schema. The
+  recomputed counts are checked against the stored ones; a mismatch is a 500, not
+  something to paper over.
+- **A recipe, not a dump.** One pallet layer + one container floor + repeat
+  counts: **1,940 bytes describes 1,440 cartons.** The browser composes the load
+  by translation only and never re-derives a packing — for a `mixed` layer it
+  could not, since "12 per layer" does not say where the twelfth carton sits.
+- **Verified against physics, not a screenshot** (`frontend/tests/load-plan.spec.ts`):
+  nothing overlaps, nothing escapes the container, cartons sit on their deck, and
+  the composed count equals the results page. A misplaced carton looks exactly
+  like a correct one.
+- **Not modelled:** load securing, dunnage, weight distribution across the
+  container floor, or door-side access. The view shows where cartons go, not how
+  to strap them.
+
+## 8. Scope not implemented
 
 Called out explicitly rather than left as a silent gap:
 
@@ -284,7 +305,7 @@ Called out explicitly rather than left as a silent gap:
 - **Multi-leg logistics** — a single ocean voyage; no inland haulage or transhipment.
 - **Carton compression (BCT)** — board grade is chosen by weight, not by verified
   stack strength.
-- **3D visualisation** — not built.
+- **Export to PDF** — the browser's print dialog, not generated PDF.
 - **Real freight quotes** — a linear rate model, not carrier APIs.
 
 ---

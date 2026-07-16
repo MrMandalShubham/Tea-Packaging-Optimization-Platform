@@ -414,3 +414,53 @@ export interface ReferenceData {
 }
 
 export const getReferenceData = () => request<ReferenceData>("/api/reference");
+
+// ── Load plan (3D visualisation) ──────────────────────────────────────────────
+
+export interface Placement {
+  /** Millimetres from the lower-left corner of the containing area. */
+  x: number;
+  y: number;
+  /** True when the item's length runs along the area's width. */
+  rotated: boolean;
+}
+
+export interface BoxDims {
+  length_mm: number;
+  width_mm: number;
+  height_mm: number;
+}
+
+/**
+ * The real load plan, as computed by the optimiser.
+ *
+ * A recipe, not 1,400 positions: one pallet layer plus one container floor, with
+ * repeat counts. The client composes the load by translation only — it must never
+ * re-derive a packing, because for a `mixed` pattern it cannot.
+ */
+export interface LoadPlan {
+  simulation_id: string;
+  container_type: string;
+  container: BoxDims;
+  pallet: BoxDims;
+  /** Height of the empty pallet deck; cartons start above this. */
+  pallet_base_height_mm: number;
+  /** Outer dimensions — what is actually stacked. */
+  carton: BoxDims;
+
+  /** Cartons in ONE pallet layer, in pallet coordinates. */
+  carton_layer: Placement[];
+  layers: number;
+  layer_pattern: string;
+
+  /** Pallets on the container floor, in container coordinates. */
+  pallet_floor: Placement[];
+  pallet_stack: number;
+
+  cartons_per_container: number;
+  pallets_per_container: number;
+  capacity_utilization_pct: number;
+}
+
+export const getLoadPlan = (simulationId: string) =>
+  request<LoadPlan>(`/api/simulation/${simulationId}/layout`);

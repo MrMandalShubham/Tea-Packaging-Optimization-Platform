@@ -29,6 +29,7 @@ import {
   Legend,
 } from "recharts";
 import { ChatWidget } from "@/components/layout/chat-widget";
+import { Container3DPanel } from "@/components/viz/container-3d-panel";
 import { exportSimulationToExcel } from "@/lib/export";
 import {
   ArrowLeft,
@@ -465,6 +466,9 @@ export default function ResultsPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* ── 3D load plan ─────────────────────────────────────────────── */}
+      <Container3DPanel simulationId={data.id} />
 
       {/* ── Cost Breakdown + Comparison ──────────────────────────────── */}
       {/* The comparison table carries a driver sentence per row, so it gets two

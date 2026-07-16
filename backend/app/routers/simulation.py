@@ -2,6 +2,8 @@
 Simulation router — CRUD endpoints for full optimization simulations.
 """
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -36,9 +38,16 @@ from app.schemas import (
     CompareResponse,
     StageValidationResponse,
     AIAnalysisResponse,
+    LoadPlanResponse,
+    PlacementResponse,
+    BoxDims,
 )
+from app.optimizers.joint import fit_rectangles
+from app.optimizers.constants import CONTAINERS, PALLET_L_MM, PALLET_W_MM, PALLET_H_MM
 from app.services.simulation_service import run_full_pipeline
 from app.services.ai_service import analyze_results
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["Simulations"])
 
@@ -288,7 +297,10 @@ async def create_simulation(body: SimulationCreateRequest, db: AsyncSession = De
         sim.status = "completed"
         sim.updated_at = utcnow()
 
-        await db.flush()
+        # Commit before returning. Reporting `201 {id}` while the transaction is
+        # still open is a promise the database has not made yet: the frontend
+        # redirects straight to /results/{id}, and that GET would 404.
+        await db.commit()
 
         return SimulationCreateResponse(
             id=str(sim.id),
@@ -297,9 +309,15 @@ async def create_simulation(body: SimulationCreateRequest, db: AsyncSession = De
         )
 
     except ValueError as e:
+        await db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Optimization failed: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception:
+        await db.rollback()
+        # Don't echo str(e): it can carry internals into a client response.
+        logger.exception("Simulation failed")
+        raise HTTPException(status_code=500, detail="Optimization failed")
 
 
 @router.get("/simulation", response_model=PaginatedSimulations)
@@ -475,6 +493,94 @@ async def get_simulation(simulation_id: str, db: AsyncSession = Depends(get_db))
         best_container=best_container,
         container_alternatives=container_alts,
         comparison=comparison,
+    )
+
+
+@router.get("/simulation/{simulation_id}/layout", response_model=LoadPlanResponse)
+async def get_load_plan(simulation_id: str, db: AsyncSession = Depends(get_db)):
+    """
+    The load plan for the recommended container — what goes where.
+
+    Recomputed from the stored dimensions rather than persisted: packing is a pure
+    function of those dimensions, so recomputing cannot drift from the saved
+    result and costs no schema. The recomputed counts are checked against the
+    stored ones and a mismatch is an error, not something to paper over — a 3D
+    view that disagrees with the numbers beside it is worse than no 3D view.
+    """
+    result = await db.execute(
+        select(Simulation)
+        .options(
+            selectinload(Simulation.carton_config),
+            selectinload(Simulation.pallet_config),
+            selectinload(Simulation.container_configs),
+        )
+        .where(Simulation.id == simulation_id)
+    )
+    sim = result.scalar_one_or_none()
+    if not sim:
+        raise HTTPException(status_code=404, detail="Simulation not found")
+
+    carton = sim.carton_config
+    pallet = sim.pallet_config
+    best = next((c for c in sim.container_configs if c.is_best), None)
+    if not carton or not pallet or not best:
+        raise HTTPException(
+            status_code=400, detail="Simulation has no completed load plan"
+        )
+
+    spec = CONTAINERS.get(best.container_type)
+    if not spec:
+        raise HTTPException(
+            status_code=500, detail=f"Unknown container type {best.container_type}"
+        )
+
+    # Cartons are stacked by their OUTER dimensions — board has thickness.
+    layer = fit_rectangles(carton.length, carton.width, PALLET_L_MM, PALLET_W_MM)
+    floor = fit_rectangles(
+        PALLET_L_MM, PALLET_W_MM, spec["internal_l"] * 1000, spec["internal_w"] * 1000
+    )
+
+    if layer.count != pallet.cartons_per_layer:
+        logger.error(
+            "Load plan drift for %s: recomputed %d cartons/layer, stored %d",
+            simulation_id,
+            layer.count,
+            pallet.cartons_per_layer,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Load plan does not reconcile with the stored result",
+        )
+
+    return LoadPlanResponse(
+        simulation_id=str(sim.id),
+        container_type=best.container_type,
+        container=BoxDims(
+            length_mm=spec["internal_l"] * 1000,
+            width_mm=spec["internal_w"] * 1000,
+            height_mm=spec["internal_h"] * 1000,
+        ),
+        pallet=BoxDims(
+            length_mm=PALLET_L_MM,
+            width_mm=PALLET_W_MM,
+            height_mm=pallet.pallet_height * 1000,
+        ),
+        pallet_base_height_mm=PALLET_H_MM,
+        carton=BoxDims(
+            length_mm=carton.length, width_mm=carton.width, height_mm=carton.height
+        ),
+        carton_layer=[
+            PlacementResponse(x=p.x, y=p.y, rotated=p.rotated) for p in layer.placements
+        ],
+        layers=pallet.layers,
+        layer_pattern=pallet.layer_pattern or layer.pattern,
+        pallet_floor=[
+            PlacementResponse(x=p.x, y=p.y, rotated=p.rotated) for p in floor.placements
+        ],
+        pallet_stack=best.pallet_stack or 1,
+        cartons_per_container=best.cartons_per_container,
+        pallets_per_container=best.pallets_per_container or floor.count,
+        capacity_utilization_pct=best.capacity_utilization_pct,
     )
 
 

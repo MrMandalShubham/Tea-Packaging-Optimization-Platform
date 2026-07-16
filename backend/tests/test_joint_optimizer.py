@@ -24,13 +24,11 @@ QTY = 100_000
 class TestFitRectangles:
     def test_uniform_fit(self):
         # Four 600×500 cartons tile a 1200×1000 pallet exactly.
-        count, _ = fit_rectangles(600, 500, 1200, 1000)
-        assert count == 4
+        assert fit_rectangles(600, 500, 1200, 1000).count == 4
 
     def test_rotation_considered(self):
         # 1000×200 only fits rotated on a 1200×1000 pallet.
-        count, _ = fit_rectangles(1000, 200, 1200, 1000)
-        assert count >= 5
+        assert fit_rectangles(1000, 200, 1200, 1000).count >= 5
 
     def test_mixed_beats_both_uniform_orientations(self):
         # 700×200 into a 1200×1000 pallet:
@@ -38,21 +36,81 @@ class TestFitRectangles:
         #   rotated    → 6 cols × 1 row            = 6
         #   mixed      → 5, plus a rotated pair in
         #                the leftover 500mm margin = 7   ← wins
-        count, pattern = fit_rectangles(700, 200, 1200, 1000)
-        assert (count, pattern) == (7, "mixed")
+        r = fit_rectangles(700, 200, 1200, 1000)
+        assert (r.count, r.pattern) == (7, "mixed")
 
     def test_rotation_alone_reported_as_uniform(self):
         # 500×400: rotating gives 3×2=6 vs 2×2=4 unrotated. No margin trick needed,
         # so the pattern must not be mislabelled "mixed".
-        count, pattern = fit_rectangles(500, 400, 1200, 1000)
-        assert (count, pattern) == (6, "uniform-widthwise")
+        r = fit_rectangles(500, 400, 1200, 1000)
+        assert (r.count, r.pattern) == (6, "uniform-widthwise")
 
     def test_oversized_item_does_not_fit(self):
-        count, _ = fit_rectangles(1500, 1500, 1200, 1000)
-        assert count == 0
+        assert fit_rectangles(1500, 1500, 1200, 1000).count == 0
 
     def test_zero_dimensions_safe(self):
-        assert fit_rectangles(0, 100, 1200, 1000) == (0, "none")
+        r = fit_rectangles(0, 100, 1200, 1000)
+        assert (r.count, r.pattern, r.placements) == (0, "none", ())
+
+
+class TestFitPlacements:
+    """
+    The packing must be reported, not just counted.
+
+    A count alone forces every consumer — pallet diagram, 3D view, loading
+    instruction — to re-derive the arrangement, and for a `mixed` pattern that is
+    impossible: "12 per layer" does not say where the twelfth one goes.
+    """
+
+    def test_placements_match_the_count(self):
+        for item, area in [
+            ((600, 500), (1200, 1000)),
+            ((700, 200), (1200, 1000)),
+            ((289, 328), (1200, 1000)),
+        ]:
+            r = fit_rectangles(item[0], item[1], area[0], area[1])
+            assert len(r.placements) == r.count
+
+    @pytest.mark.parametrize(
+        "il,iw",
+        [(600, 500), (700, 200), (500, 400), (289, 328), (350, 250), (1200, 1000)],
+    )
+    def test_placements_stay_inside_the_area(self, il, iw):
+        area_l, area_w = 1200.0, 1000.0
+        for p in fit_rectangles(il, iw, area_l, area_w).placements:
+            w = iw if p.rotated else il
+            h = il if p.rotated else iw
+            assert p.x >= -1e-6 and p.y >= -1e-6
+            assert p.x + w <= area_l + 1e-6, "carton hangs off the pallet length"
+            assert p.y + h <= area_w + 1e-6, "carton hangs off the pallet width"
+
+    @pytest.mark.parametrize(
+        "il,iw", [(600, 500), (700, 200), (500, 400), (289, 328), (350, 250)]
+    )
+    def test_placements_do_not_overlap(self, il, iw):
+        """Two cartons in the same space would be a load plan nobody can execute."""
+        rects = []
+        for p in fit_rectangles(il, iw, 1200, 1000).placements:
+            w = iw if p.rotated else il
+            h = il if p.rotated else iw
+            rects.append((p.x, p.y, p.x + w, p.y + h))
+
+        for i, a in enumerate(rects):
+            for b in rects[i + 1 :]:
+                overlap_x = min(a[2], b[2]) - max(a[0], b[0])
+                overlap_y = min(a[3], b[3]) - max(a[1], b[1])
+                assert overlap_x <= 1e-6 or overlap_y <= 1e-6, (
+                    f"{a} overlaps {b}"
+                )
+
+    def test_mixed_layout_actually_contains_both_orientations(self):
+        r = fit_rectangles(700, 200, 1200, 1000)
+        assert r.pattern == "mixed"
+        assert {p.rotated for p in r.placements} == {True, False}
+
+    def test_uniform_layout_has_one_orientation(self):
+        r = fit_rectangles(600, 500, 1200, 1000)
+        assert len({p.rotated for p in r.placements}) == 1
 
 
 class TestJointSearch:

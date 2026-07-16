@@ -135,6 +135,15 @@ class JointPallet:
     total_weight_kg: float
     layer_pattern: str          # "uniform-lengthwise" | "uniform-widthwise" | "mixed"
     footprint_utilization_pct: float
+    # The layer's packing recipe. Every layer is identical, so this plus `layers`
+    # fully describes the stack. Held as the recipe rather than expanded positions
+    # so the search stays cheap; expand via `layer_placements`.
+    layer_fit: Optional[FitResult] = None
+
+    @property
+    def layer_placements(self) -> tuple[Placement, ...]:
+        """Where each carton in ONE layer sits, in pallet coordinates."""
+        return self.layer_fit.placements if self.layer_fit else ()
 
 
 @dataclass
@@ -184,6 +193,14 @@ class JointContainer:
     total_freight_cost: float
     container_volume_m3: float
     max_payload_kg: float
+    # The floor's packing recipe. With `pallet_stack` this fully describes the
+    # load plan. Expand via `floor_placements`.
+    floor_fit: Optional[FitResult] = None
+
+    @property
+    def floor_placements(self) -> tuple[Placement, ...]:
+        """Where each pallet sits on the container floor."""
+        return self.floor_fit.placements if self.floor_fit else ()
 
 
 @dataclass
@@ -223,54 +240,136 @@ class SearchResult:
 
 # ── Geometry helpers ──────────────────────────────────────────────────────────
 
+@dataclass(frozen=True)
+class Placement:
+    """
+    One rectangle placed in an area, positioned by its lower-left corner.
+
+    `rotated` means the item's length runs along the area's width, so the
+    footprint is (item_w, item_l) rather than (item_l, item_w).
+    """
+
+    x: float
+    y: float
+    rotated: bool
+
+
+@dataclass(frozen=True)
+class _Block:
+    """A cols×rows grid of identically-oriented items starting at x0."""
+
+    cols: int
+    rows: int
+    x0: float
+    rotated: bool
+
+    @property
+    def count(self) -> int:
+        return self.cols * self.rows
+
+
+@dataclass(frozen=True)
+class FitResult:
+    """
+    A packing of same-size rectangles into an area.
+
+    The arrangement is stored as a *recipe* — at most two grid blocks — and
+    materialised into `placements` only when someone asks. That matters: the joint
+    search calls `fit_rectangles` ~90k times per run purely to ask "how many fit?",
+    and building a Placement object per carton on every one of those probes took
+    the suite from 50s to 270s. The recipe is a couple of small tuples.
+
+    `placements` exists at all because a count alone forces anything downstream —
+    a pallet diagram, a 3D view, a loading instruction — to re-derive the
+    arrangement, and for the `mixed` pattern it could not: "12 per layer" does not
+    say where the twelfth one goes.
+    """
+
+    count: int
+    pattern: str
+    item_l: float = 0.0
+    item_w: float = 0.0
+    blocks: tuple[_Block, ...] = ()
+
+    @property
+    def placements(self) -> tuple[Placement, ...]:
+        """Expand the recipe into concrete positions, origin at the lower-left."""
+        out: list[Placement] = []
+        for b in self.blocks:
+            step_x = self.item_w if b.rotated else self.item_l
+            step_y = self.item_l if b.rotated else self.item_w
+            for c in range(b.cols):
+                for r in range(b.rows):
+                    out.append(
+                        Placement(x=b.x0 + c * step_x, y=r * step_y, rotated=b.rotated)
+                    )
+        return tuple(out)
+
+
 def fit_rectangles(
     item_l: float, item_w: float, area_l: float, area_w: float
-) -> tuple[int, str]:
+) -> FitResult:
     """
     Fit same-size rectangles into a rectangular area, axis-aligned.
 
-    Tries three patterns and returns the best:
+    Tries four patterns and returns the best:
       1. uniform, item length along area length
       2. uniform, item length along area width (rotated 90°)
-      3. mixed — a main block in one orientation plus a rotated strip in the
-         leftover margin. This is the "pinwheel-lite" pattern real pallet
-         planners use, and it is often 1-2 items per layer better than uniform.
+      3. mixed — a main unrotated block plus a rotated strip in the leftover
+         length margin. The "pinwheel-lite" pattern real pallet planners use;
+         often 1-2 items per layer better than uniform.
+      4. mixed — the same idea with the main block rotated.
 
-    Returns (count, pattern_name).
+    Coordinates are in the area's frame, origin at the lower-left corner.
     """
-    if item_l <= 0 or item_w <= 0:
-        return 0, "none"
+    if item_l <= 0 or item_w <= 0 or area_l <= 0 or area_w <= 0:
+        return FitResult(0, "none")
 
     # 1. uniform, unrotated
-    a_cols, a_rows = int(area_l // item_l), int(area_w // item_w)
-    count_a = a_cols * a_rows
+    a = (_Block(int(area_l // item_l), int(area_w // item_w), 0.0, False),)
 
     # 2. uniform, rotated
-    b_cols, b_rows = int(area_l // item_w), int(area_w // item_l)
-    count_b = b_cols * b_rows
+    b = (_Block(int(area_l // item_w), int(area_w // item_l), 0.0, True),)
 
-    # 3. mixed: main block unrotated, rotated strip in the length margin
-    count_c = 0
-    if a_cols > 0:
-        margin_l = area_l - a_cols * item_l
-        strip = int(margin_l // item_w) * int(area_w // item_l)
-        count_c = count_a + strip
+    # 3. mixed: unrotated main block, rotated strip in the length margin
+    c: tuple[_Block, ...] = ()
+    if a[0].cols > 0:
+        margin_x = a[0].cols * item_l
+        strip = _Block(
+            int((area_l - margin_x) // item_w), int(area_w // item_l), margin_x, True
+        )
+        if strip.count > 0:
+            c = a + (strip,)
 
-    # 4. mixed: main block rotated, unrotated strip in the length margin
-    count_d = 0
-    if b_cols > 0:
-        margin_l = area_l - b_cols * item_w
-        strip = int(margin_l // item_l) * int(area_w // item_w)
-        count_d = count_b + strip
+    # 4. mixed: rotated main block, unrotated strip in the length margin
+    d: tuple[_Block, ...] = ()
+    if b[0].cols > 0:
+        margin_x = b[0].cols * item_w
+        strip = _Block(
+            int((area_l - margin_x) // item_l), int(area_w // item_w), margin_x, False
+        )
+        if strip.count > 0:
+            d = b + (strip,)
 
-    best = max(count_a, count_b, count_c, count_d)
-    if best == 0:
-        return 0, "none"
-    if best == count_c and count_c > max(count_a, count_b):
-        return best, "mixed"
-    if best == count_d and count_d > max(count_a, count_b):
-        return best, "mixed"
-    return best, "uniform-lengthwise" if count_a >= count_b else "uniform-widthwise"
+    def total(blocks: tuple[_Block, ...]) -> int:
+        return sum(bl.count for bl in blocks)
+
+    uniform_best = max(total(a), total(b))
+    candidates = [
+        (total(a), "uniform-lengthwise", a),
+        (total(b), "uniform-widthwise", b),
+        (total(c), "mixed", c),
+        (total(d), "mixed", d),
+    ]
+    count, pattern, blocks = max(candidates, key=lambda x: x[0])
+
+    if count == 0:
+        return FitResult(0, "none")
+    # Only call it mixed if mixing actually bought something.
+    if pattern == "mixed" and count <= uniform_best:
+        count, pattern, blocks = max(candidates[:2], key=lambda x: x[0])
+
+    return FitResult(count, pattern, item_l, item_w, blocks)
 
 
 def _board_grade_for(weight_kg: float) -> tuple[str, float]:
@@ -362,9 +461,10 @@ def _build_pallet(
     depends on the container and stacking choice — this is exactly the coupling
     the sequential pipeline could not express.
     """
-    per_layer, pattern = fit_rectangles(
+    layer = fit_rectangles(
         carton.outer_length_mm, carton.outer_width_mm, PALLET_L_MM, PALLET_W_MM
     )
+    per_layer, pattern = layer.count, layer.pattern
     if per_layer < 1:
         return None
 
@@ -401,6 +501,7 @@ def _build_pallet(
         total_weight_kg=round(load_kg, 2),
         layer_pattern=pattern,
         footprint_utilization_pct=round(min(footprint, 100.0), 1),
+        layer_fit=layer,
     )
 
 
@@ -487,13 +588,13 @@ def optimize_jointly(
                             if pallet is None:
                                 continue
 
-                            floor_fit, _ = fit_rectangles(
+                            floor = fit_rectangles(
                                 PALLET_L_MM, PALLET_W_MM, ct_l_mm, ct_w_mm
                             )
-                            if floor_fit < 1:
+                            if floor.count < 1:
                                 continue
 
-                            pallets_per_container = floor_fit * stack
+                            pallets_per_container = floor.count * stack
                             cartons_per_container = (
                                 pallets_per_container * pallet.cartons_per_pallet
                             )
@@ -567,6 +668,7 @@ def optimize_jointly(
                                 total_freight_cost=round(freight_total, 2),
                                 container_volume_m3=ct["volume_m3"],
                                 max_payload_kg=ct["max_payload_kg"],
+                                floor_fit=floor,
                             )
 
                             best.append(

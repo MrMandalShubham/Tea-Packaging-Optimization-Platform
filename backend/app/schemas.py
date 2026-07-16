@@ -455,6 +455,61 @@ class ChatResponse(BaseModel):
     )
 
 
+# ── Load plan (3D visualisation) ──────────────────────────────────────────────
+
+class PlacementResponse(BaseModel):
+    """One item placed in an area, positioned by its lower-left corner (mm)."""
+
+    x: float
+    y: float
+    rotated: bool = Field(
+        description="True when the item's length runs along the area's width"
+    )
+
+
+class BoxDims(BaseModel):
+    length_mm: float
+    width_mm: float
+    height_mm: float
+
+
+class LoadPlanResponse(BaseModel):
+    """
+    The real load plan, as computed by the optimiser.
+
+    Sent as a *recipe*, not 1,400 positions: one pallet layer plus one container
+    floor, with repeat counts. The client composes the full load by translation
+    only — it never re-derives a packing, because it could not: for a `mixed`
+    layer pattern, "12 per layer" does not say where the twelfth carton goes.
+
+    Coordinates are millimetres from the lower-left corner of the relevant area.
+    """
+
+    simulation_id: str
+    container_type: str
+    container: BoxDims
+    pallet: BoxDims
+    pallet_base_height_mm: float = Field(
+        description="Height of the empty pallet deck; cartons start above this"
+    )
+    carton: BoxDims = Field(description="Outer dimensions — what is actually stacked")
+
+    carton_layer: list[PlacementResponse] = Field(
+        description="Cartons in ONE pallet layer, in pallet coordinates"
+    )
+    layers: int = Field(description="Identical layers stacked per pallet")
+    layer_pattern: str
+
+    pallet_floor: list[PlacementResponse] = Field(
+        description="Pallets on the container floor, in container coordinates"
+    )
+    pallet_stack: int = Field(description="Pallets stacked high in the container")
+
+    cartons_per_container: int
+    pallets_per_container: int
+    capacity_utilization_pct: float
+
+
 # ── Reference data ────────────────────────────────────────────────────────────
 
 class PackageWeightOption(BaseModel):

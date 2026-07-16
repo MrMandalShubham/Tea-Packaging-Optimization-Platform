@@ -112,8 +112,8 @@ class TestBaselineIsNotAStrawman:
         from app.optimizers.joint import fit_rectangles
 
         b = compute_baseline(0.35, 250.0, QTY)
-        expected, _ = fit_rectangles(1200, 1000, 5.898 * 1000, 2.352 * 1000)
-        assert b.pallets_per_container == expected
+        expected = fit_rectangles(1200, 1000, 5.898 * 1000, 2.352 * 1000)
+        assert b.pallets_per_container == expected.count
 
     def test_savings_stay_in_a_defensible_band(self):
         """
