@@ -23,9 +23,15 @@
 import { useMemo, useRef, useLayoutEffect } from "react";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls, Edges, Bounds } from "@react-three/drei";
+// `Edges` is still used on the container shell, just not on the (instanced) cartons.
 import * as THREE from "three";
 import type { LoadPlan } from "@/lib/api";
 import { composeCartons, composePallets, MM, type Box } from "@/lib/load-plan";
+
+// A hair of air between cartons so the block reads as individual boxes rather
+// than one solid slab. Applied at render time only — the geometry the
+// correctness tests check stays exact.
+const CARTON_GAP_M = 0.012;
 
 /** Every carton in one draw call — 1,440 individual meshes would not be viable. */
 function Cartons({ boxes, cartonH }: { boxes: Box[]; cartonH: number }) {
@@ -35,10 +41,11 @@ function Cartons({ boxes, cartonH }: { boxes: Box[]; cartonH: number }) {
     const mesh = ref.current;
     if (!mesh) return;
     const dummy = new THREE.Object3D();
+    const shrink = (size: number) => Math.max(size - CARTON_GAP_M, size * 0.5);
     boxes.forEach((b, i) => {
       dummy.position.set(b.x, b.y, b.z);
       // Instances share one unit cube, so per-carton size is a scale.
-      dummy.scale.set(b.l, cartonH, b.w);
+      dummy.scale.set(shrink(b.l), shrink(cartonH), shrink(b.w));
       dummy.updateMatrix();
       mesh.setMatrixAt(i, dummy.matrix);
     });
@@ -47,6 +54,10 @@ function Cartons({ boxes, cartonH }: { boxes: Box[]; cartonH: number }) {
     mesh.computeBoundingSphere();
   }, [boxes, cartonH]);
 
+  // No <Edges> here: drei's Edges helper does not understand instancing, so it
+  // draws the base cube's outline ONCE at the local origin instead of on each
+  // carton — a stray 1 m wireframe box floating at the container corner. The gap
+  // between cartons does the job of making individual boxes legible.
   return (
     <instancedMesh
       ref={ref}
@@ -55,9 +66,12 @@ function Cartons({ boxes, cartonH }: { boxes: Box[]; cartonH: number }) {
       receiveShadow
     >
       <boxGeometry args={[1, 1, 1]} />
-      <meshStandardMaterial color="#caa26c" roughness={0.85} metalness={0.02} />
-      {/* Edges make individual cartons legible in a dense block. */}
-      <Edges color="#8a6a42" threshold={15} />
+      <meshStandardMaterial
+        color="#caa26c"
+        roughness={0.8}
+        metalness={0.02}
+        flatShading
+      />
     </instancedMesh>
   );
 }
