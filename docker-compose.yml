@@ -2,16 +2,20 @@ services:
   db:
     image: postgres:16-alpine
     container_name: tea_packaging_db
+    # Defaults so the stack starts even with an empty or missing .env. Postgres
+    # refuses to initialise without a password and exits(1), which took down the
+    # whole `docker compose up` on the first command a new user runs.
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:-tea_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tea_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-tea_packaging}
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test:
+        ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tea_user} -d ${POSTGRES_DB:-tea_packaging}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -19,13 +23,23 @@ services:
   backend:
     build: ./backend
     container_name: tea_packaging_api
+    # Optional: without this, a missing .env aborts `docker compose up` before
+    # anything starts. Every value the backend needs has a default below, so the
+    # stack runs on a bare clone; .env only supplies your own overrides (chiefly
+    # OPENAI_API_KEY).
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
-      DATABASE_URL: ${DATABASE_URL}
-      DATABASE_URL_SYNC: ${DATABASE_URL_SYNC}
+      # Derived, NOT taken from .env. Inside this network the database host is
+      # `db`; on the host it is `localhost`. One variable cannot be right for
+      # both, and the .env value has to serve local uvicorn, so compose builds
+      # its own. Deriving it removes a whole class of "connection refused".
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-tea_user}:${POSTGRES_PASSWORD:-tea_pass}@db:5432/${POSTGRES_DB:-tea_packaging}
+      DATABASE_URL_SYNC: postgresql://${POSTGRES_USER:-tea_user}:${POSTGRES_PASSWORD:-tea_pass}@db:5432/${POSTGRES_DB:-tea_packaging}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
       # Alembic owns the schema here, as it does in production. Leaving this on
       # would let the app create its own tables and quietly paper over a broken
       # migration — which is exactly what happened: `alembic upgrade head` failed

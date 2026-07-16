@@ -102,12 +102,16 @@ calls OpenAI.
 ### Docker (recommended)
 
 ```bash
-cp .env.example .env          # set POSTGRES_*, DATABASE_URL*, OPENAI_API_KEY
+git clone https://github.com/MrMandalShubham/Tea-Packaging-Optimization-Platform.git
+cd Tea-Packaging-Optimization-Platform
+cp .env.example .env
 docker compose up -d
 ```
 
-That's the whole thing — the backend runs `alembic upgrade head` before serving,
-and reference data seeds on startup.
+That's the whole thing. `.env.example` ships working local defaults — nothing to
+fill in — the backend runs `alembic upgrade head` before serving, and reference
+data seeds on startup. (Verified from a clean clone, and it also starts with no
+`.env` at all.)
 
 - Frontend → http://localhost:3000
 - Swagger → http://localhost:8000/docs
@@ -138,14 +142,17 @@ npm run dev
 
 ### Environment
 
+All of these have working defaults; you only need to touch `OPENAI_API_KEY`.
+
 | Variable | Where | Notes |
 |---|---|---|
-| `DATABASE_URL` | backend | `postgresql+asyncpg://…` — async driver |
-| `DATABASE_URL_SYNC` | backend | `postgresql://…` — for Alembic offline mode |
-| `OPENAI_API_KEY` | backend | **Server-side only.** Never `NEXT_PUBLIC_*`. |
+| `POSTGRES_USER/PASSWORD/DB` | db | Local container credentials — not secrets |
+| `DATABASE_URL` | backend | `postgresql+asyncpg://…` — async driver. **Used only when running uvicorn on the host**; compose derives its own (host `db`, not `localhost`) |
+| `DATABASE_URL_SYNC` | backend | `postgresql://…` — Alembic offline mode |
+| `OPENAI_API_KEY` | backend | **Optional.** The optimisation is arithmetic and runs without it; only the assistant and written explanation need it. **Server-side only** — never `NEXT_PUBLIC_*` |
 | `OPENAI_MODEL` | backend | default `gpt-4o-mini` |
 | `CORS_ORIGINS` | backend | comma-separated |
-| `AUTO_CREATE_TABLES` | backend | dev only; Alembic owns the schema |
+| `AUTO_CREATE_TABLES` | backend | dev only; compose forces it off so Alembic owns the schema |
 | `NEXT_PUBLIC_API_URL` | frontend | public — ships in the browser bundle |
 
 > Anything `NEXT_PUBLIC_*` is inlined into the JS bundle and readable by every
