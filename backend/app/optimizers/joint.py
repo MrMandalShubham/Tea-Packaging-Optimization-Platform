@@ -235,6 +235,22 @@ class SearchResult:
     # Module 6 ("compare 20GP / 40GP / 40HC") needs, and keying by type also
     # satisfies the one-row-per-(simulation, container_type) DB constraint.
     by_container_type: dict[str, Configuration] = field(default_factory=dict)
+
+    # ── Densest packing, a different question from cheapest ──────────────────
+    # "How many pouches fit in ONE container?" is not the same question as "what
+    # is the cheapest way to ship N pouches", and the answers can differ. Every
+    # candidate pouch holds the same tea (volume = weight / density is fixed), so
+    # they differ only in SHAPE: a cube has the least surface area and so the
+    # cheapest film, but another shape may tile the carton and pallet better and
+    # fit more per container. The search already evaluates both; this keeps the
+    # densest one instead of discarding it.
+    #
+    # `max_capacity.total_cost` is always >= `best.total_cost` — `best` is the
+    # global cost minimum by construction. That inequality is the honest part:
+    # denser is not free, and the UI must show what it costs.
+    max_capacity: Optional[Configuration] = None
+    max_by_container_type: dict[str, Configuration] = field(default_factory=dict)
+
     evaluated: int = 0
 
 
@@ -708,6 +724,19 @@ def optimize_jointly(
     for cfg in best:
         by_type.setdefault(cfg.container.container_type, cfg)
 
+    # Densest option for each container type: most pouches in ONE full container.
+    # Ties break toward the cheaper config, so "densest" never gratuitously costs
+    # more than it must.
+    def density_key(c: Configuration) -> tuple[int, float]:
+        return (c.container.units_per_container, -c.total_cost)
+
+    max_by_type: dict[str, Configuration] = {}
+    for cfg in best:
+        current = max_by_type.get(cfg.container.container_type)
+        if current is None or density_key(cfg) > density_key(current):
+            max_by_type[cfg.container.container_type] = cfg
+    densest = max(best, key=density_key)
+
     # Keep only one representative per (container, carton size, stacking) shape so
     # the alternatives are genuinely different trade-offs a planner could choose
     # between, rather than five roundings of the same answer. `best` is already
@@ -734,5 +763,7 @@ def optimize_jointly(
         best=winner,
         alternatives=distinct[1:],
         by_container_type=by_type,
+        max_capacity=densest,
+        max_by_container_type=max_by_type,
         evaluated=len(best),
     )

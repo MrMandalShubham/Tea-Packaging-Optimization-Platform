@@ -97,6 +97,11 @@ class PipelineResult:
     configurations_by_container: dict[str, Configuration] = field(default_factory=dict)
     alternative_configurations: list[Configuration] = field(default_factory=list)
 
+    # Densest packing — "how many fit in ONE container?", which is a different
+    # question from "what is cheapest". See SearchResult.max_capacity.
+    max_capacity: Optional[Configuration] = None
+    max_capacity_by_container: dict[str, Configuration] = field(default_factory=dict)
+
     # Baseline
     current: Optional[CurrentEstimate] = None
     baseline: Optional[BaselineResult] = None
@@ -242,6 +247,8 @@ def run_full_pipeline(
     ]
     result.configurations_by_container = search.by_container_type
     result.alternative_configurations = search.alternatives
+    result.max_capacity = search.max_capacity
+    result.max_capacity_by_container = search.max_by_container_type
     result.configurations_evaluated = search.evaluated
 
     result.cartons_needed = winner.cartons_needed

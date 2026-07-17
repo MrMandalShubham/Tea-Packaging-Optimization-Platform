@@ -41,6 +41,11 @@ from app.schemas import (
     LoadPlanResponse,
     PlacementResponse,
     BoxDims,
+    MaxCapacityResponse,
+    MaxCapacityOption,
+    MaxCapacityPackage,
+    MaxCapacityCarton,
+    MaxCapacityPallet,
 )
 from app.optimizers.joint import fit_rectangles
 from app.optimizers.constants import CONTAINERS, PALLET_L_MM, PALLET_W_MM, PALLET_H_MM
@@ -581,6 +586,151 @@ async def get_load_plan(simulation_id: str, db: AsyncSession = Depends(get_db)):
         cartons_per_container=best.cartons_per_container,
         pallets_per_container=best.pallets_per_container or floor.count,
         capacity_utilization_pct=best.capacity_utilization_pct,
+    )
+
+
+@router.get("/simulation/{simulation_id}/max-capacity", response_model=MaxCapacityResponse)
+async def get_max_capacity(simulation_id: str, db: AsyncSession = Depends(get_db)):
+    """
+    The most that fits in ONE container of each type, for this simulation's inputs.
+
+    A different question from the one the results page answers. The page shows the
+    cheapest way to ship a given quantity; this shows the ceiling — useful for
+    quoting ("how much tea can I get in one 40HC?") and capacity planning.
+
+    Recomputed from the stored inputs rather than persisted: the search is
+    deterministic, so recomputation cannot drift from the saved result and costs
+    no schema. Same reasoning as /layout.
+
+    Note on comparing types: max units is only meaningful *within* a container
+    type. A 40HC beats a 20GP because it is a bigger box, not because it packs
+    better — `capacity_utilization_pct` is the fair cross-type measure. The
+    response says so rather than letting the reader infer an improvement that
+    isn't there.
+    """
+    result = await db.execute(
+        select(Simulation)
+        .options(selectinload(Simulation.inputs))
+        .where(Simulation.id == simulation_id)
+    )
+    sim = result.scalar_one_or_none()
+    if not sim:
+        raise HTTPException(status_code=404, detail="Simulation not found")
+    if not sim.inputs:
+        raise HTTPException(status_code=400, detail="Simulation has no inputs")
+
+    i = sim.inputs
+    try:
+        pipeline = run_full_pipeline(
+            tea_density=i.tea_density,
+            package_weight=i.package_weight,
+            shipment_quantity=i.shipment_quantity,
+            shipment_type=i.shipment_type,
+            package_shape=i.package_shape,
+            packaging_material=i.packaging_material,
+            target_market=i.target_market,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if not pipeline.max_capacity or not pipeline.max_capacity_by_container:
+        raise HTTPException(status_code=500, detail="No capacity result available")
+
+    def to_option(cfg, recommended_type: str) -> MaxCapacityOption:
+        c, p, ct, pl = cfg.container, cfg.package, cfg.carton, cfg.pallet
+        tea_kg = c.units_per_container * i.package_weight / 1000.0
+        # Tea is light, so these loads are almost always capped by space rather
+        # than by the container's weight limit. Saying which is genuinely useful.
+        limited_by = "weight" if c.payload_kg >= c.max_payload_kg * 0.98 else "volume"
+        return MaxCapacityOption(
+            container_type=c.container_type,
+            is_recommended_type=(c.container_type == recommended_type),
+            max_cartons_per_container=c.cartons_per_container,
+            max_units_per_container=c.units_per_container,
+            max_tea_weight_kg=round(tea_kg, 1),
+            capacity_utilization_pct=c.capacity_utilization_pct,
+            pallets_per_container=c.pallets_per_container,
+            pallet_stack=c.pallet_stack,
+            payload_kg=c.payload_kg,
+            max_payload_kg=c.max_payload_kg,
+            limited_by=limited_by,
+            package=MaxCapacityPackage(
+                length_mm=p.length_mm,
+                width_mm=p.width_mm,
+                height_mm=p.height_mm,
+                volume_cm3=p.volume_cm3,
+                product_volume_cm3=p.product_volume_cm3,
+                fill_ratio=p.fill_ratio,
+                cost_estimate=p.cost_estimate,
+                shape=p.shape,
+                material=p.material,
+            ),
+            carton=MaxCapacityCarton(
+                outer_length_mm=ct.outer_length_mm,
+                outer_width_mm=ct.outer_width_mm,
+                outer_height_mm=ct.outer_height_mm,
+                units_per_carton=ct.units_per_carton,
+                arrangement="x".join(str(n) for n in ct.arrangement),
+                carton_weight_kg=ct.carton_weight_kg,
+                board_grade=ct.board_grade,
+            ),
+            pallet=MaxCapacityPallet(
+                cartons_per_layer=pl.cartons_per_layer,
+                layers=pl.layers,
+                cartons_per_pallet=pl.cartons_per_pallet,
+                pallet_height_m=pl.pallet_height_m,
+                total_weight_kg=pl.total_weight_kg,
+                layer_pattern=pl.layer_pattern,
+                footprint_utilization_pct=pl.footprint_utilization_pct,
+            ),
+            total_cost_for_shipment=cfg.total_cost,
+        )
+
+    rec_type = pipeline.best_container.container_type
+    options = [
+        to_option(pipeline.max_capacity_by_container[t], rec_type)
+        for t in ("20GP", "40GP", "40HC")
+        if t in pipeline.max_capacity_by_container
+    ]
+
+    absolute = pipeline.max_capacity
+    same_type = pipeline.max_capacity_by_container[rec_type]
+    rec_units = pipeline.best_container.units_per_container
+    max_units_same_type = same_type.container.units_per_container
+    gain = ((max_units_same_type - rec_units) / rec_units * 100) if rec_units else 0.0
+    cost_delta = round(same_type.total_cost - pipeline.total_cost, 2)
+    already_maximal = max_units_same_type <= rec_units
+
+    if already_maximal:
+        verdict = (
+            f"Your recommended plan already fits the most possible into a "
+            f"{rec_type} — {rec_units:,} pouches. Nothing packs more in. Fitting "
+            f"more per container also means paying less freight, so the cheapest "
+            f"plan and the fullest one are usually the same plan."
+        )
+    else:
+        verdict = (
+            f"A {rec_type} could hold {max_units_same_type:,} pouches instead of "
+            f"{rec_units:,} ({gain:+.1f}%), but that packing costs Rs "
+            f"{cost_delta:,.0f} more for this shipment — the denser pouch shape "
+            f"uses more material than it saves in freight."
+        )
+
+    abs_tea = absolute.container.units_per_container * i.package_weight / 1000.0
+    return MaxCapacityResponse(
+        simulation_id=str(sim.id),
+        options=options,
+        absolute_max_container_type=absolute.container.container_type,
+        absolute_max_units=absolute.container.units_per_container,
+        absolute_max_cartons=absolute.container.cartons_per_container,
+        absolute_max_tea_weight_kg=round(abs_tea, 1),
+        recommended_container_type=rec_type,
+        recommended_units_per_container=rec_units,
+        max_units_for_recommended_type=max_units_same_type,
+        gain_pct=round(gain, 1),
+        cost_delta=cost_delta,
+        already_maximal=already_maximal,
+        verdict=verdict,
     )
 
 

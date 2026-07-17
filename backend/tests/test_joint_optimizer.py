@@ -242,6 +242,60 @@ class TestJointSearch:
         for key, cfg in r.by_container_type.items():
             assert cfg.container.container_type == key
 
+    # ── Maximum capacity ─────────────────────────────────────────────────────
+
+    def test_max_capacity_is_reported(self):
+        r = optimize_jointly(DENSITY, WEIGHT_G, QTY)
+        assert r.max_capacity is not None
+        assert set(r.max_by_container_type) == {"20GP", "40GP", "40HC"}
+
+    def test_densest_is_never_cheaper_than_the_cheapest(self):
+        """
+        The load-bearing invariant. `best` is the global cost minimum, so any
+        other configuration — including the densest — costs at least as much. If
+        this ever fails, the search is not actually finding the minimum.
+        """
+        r = optimize_jointly(DENSITY, WEIGHT_G, QTY)
+        assert r.max_capacity.total_cost >= r.best.total_cost - 0.01
+        for cfg in r.max_by_container_type.values():
+            assert cfg.total_cost >= r.best.total_cost - 0.01
+
+    def test_densest_really_is_the_densest_for_its_type(self):
+        """Nothing in the whole search may beat max_by_container_type on units."""
+        r = optimize_jointly(DENSITY, WEIGHT_G, QTY)
+        for ct, cfg in r.max_by_container_type.items():
+            best_for_type = cfg.container.units_per_container
+            for other in [r.best, *r.alternatives]:
+                if other.container.container_type == ct:
+                    assert other.container.units_per_container <= best_for_type
+
+    def test_max_capacity_beats_or_equals_the_recommendation(self):
+        r = optimize_jointly(DENSITY, WEIGHT_G, QTY)
+        same_type = r.max_by_container_type[r.best.container.container_type]
+        assert (
+            same_type.container.units_per_container
+            >= r.best.container.units_per_container
+        )
+
+    def test_densest_config_still_obeys_every_constraint(self):
+        """A capacity figure nobody can physically load is worse than useless."""
+        c = Constraints()
+        r = optimize_jointly(DENSITY, WEIGHT_G, QTY)
+        for cfg in r.max_by_container_type.values():
+            assert cfg.carton.carton_weight_kg <= c.max_carton_weight_kg
+            assert cfg.pallet.pallet_height_m <= c.max_pallet_height_m
+            assert cfg.pallet.total_weight_kg <= c.max_pallet_load_kg
+            assert cfg.container.payload_kg <= cfg.container.max_payload_kg
+
+    def test_bigger_container_holds_more_at_maximum(self):
+        """Sanity: a 40HC's ceiling must exceed a 20GP's. It is a bigger box."""
+        r = optimize_jointly(DENSITY, WEIGHT_G, QTY)
+        by = r.max_by_container_type
+        assert (
+            by["40HC"].container.units_per_container
+            > by["20GP"].container.units_per_container
+        )
+
     # ── shipment_type ────────────────────────────────────────────────────────
 
     def test_max_containers_is_enforced(self):

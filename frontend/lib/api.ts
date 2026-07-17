@@ -464,3 +464,81 @@ export interface LoadPlan {
 
 export const getLoadPlan = (simulationId: string) =>
   request<LoadPlan>(`/api/simulation/${simulationId}/layout`);
+
+// ── Maximum capacity ──────────────────────────────────────────────────────────
+
+export interface MaxCapacityPackage {
+  length_mm: number;
+  width_mm: number;
+  height_mm: number;
+  volume_cm3: number;
+  product_volume_cm3: number;
+  fill_ratio: number;
+  cost_estimate: number;
+  shape: string;
+  material: string;
+}
+
+export interface MaxCapacityCarton {
+  outer_length_mm: number;
+  outer_width_mm: number;
+  outer_height_mm: number;
+  units_per_carton: number;
+  arrangement: string;
+  carton_weight_kg: number;
+  board_grade: string;
+}
+
+export interface MaxCapacityPallet {
+  cartons_per_layer: number;
+  layers: number;
+  cartons_per_pallet: number;
+  pallet_height_m: number;
+  total_weight_kg: number;
+  layer_pattern: string;
+  footprint_utilization_pct: number;
+}
+
+/**
+ * The most that fits in ONE container of this type.
+ *
+ * `max_units_per_container` compares fairly only *within* a type — a 40HC beats
+ * a 20GP because it is a bigger box, not because it packs better.
+ * `capacity_utilization_pct` is the cross-type measure.
+ */
+export interface MaxCapacityOption {
+  container_type: string;
+  is_recommended_type: boolean;
+  max_cartons_per_container: number;
+  max_units_per_container: number;
+  max_tea_weight_kg: number;
+  capacity_utilization_pct: number;
+  pallets_per_container: number;
+  pallet_stack: number;
+  payload_kg: number;
+  max_payload_kg: number;
+  limited_by: string;
+  package: MaxCapacityPackage;
+  carton: MaxCapacityCarton;
+  pallet: MaxCapacityPallet;
+  total_cost_for_shipment: number;
+}
+
+export interface MaxCapacity {
+  simulation_id: string;
+  options: MaxCapacityOption[];
+  absolute_max_container_type: string;
+  absolute_max_units: number;
+  absolute_max_cartons: number;
+  absolute_max_tea_weight_kg: number;
+  recommended_container_type: string;
+  recommended_units_per_container: number;
+  max_units_for_recommended_type: number;
+  gain_pct: number;
+  cost_delta: number;
+  already_maximal: boolean;
+  verdict: string;
+}
+
+export const getMaxCapacity = (simulationId: string) =>
+  request<MaxCapacity>(`/api/simulation/${simulationId}/max-capacity`);

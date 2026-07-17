@@ -510,6 +510,104 @@ class LoadPlanResponse(BaseModel):
     capacity_utilization_pct: float
 
 
+# ── Maximum capacity ──────────────────────────────────────────────────────────
+
+class MaxCapacityPackage(BaseModel):
+    length_mm: float
+    width_mm: float
+    height_mm: float
+    volume_cm3: float
+    product_volume_cm3: float
+    fill_ratio: float
+    cost_estimate: float
+    shape: str
+    material: str
+
+
+class MaxCapacityCarton(BaseModel):
+    outer_length_mm: float
+    outer_width_mm: float
+    outer_height_mm: float
+    units_per_carton: int
+    arrangement: str
+    carton_weight_kg: float
+    board_grade: str
+
+
+class MaxCapacityPallet(BaseModel):
+    cartons_per_layer: int
+    layers: int
+    cartons_per_pallet: int
+    pallet_height_m: float
+    total_weight_kg: float
+    layer_pattern: str
+    footprint_utilization_pct: float
+
+
+class MaxCapacityOption(BaseModel):
+    """
+    The most that fits in ONE container of this type, and the packing that does it.
+
+    `max_units_per_container` is only comparable *within* a container type — a
+    40HC holds more than a 20GP because it is a bigger box, not because it packs
+    better. `capacity_utilization_pct` is the measure that compares fairly across
+    types.
+    """
+
+    container_type: str
+    is_recommended_type: bool = Field(
+        description="True when this is the container the cost optimiser chose"
+    )
+
+    max_cartons_per_container: int
+    max_units_per_container: int = Field(description="Max pouches in one full container")
+    max_tea_weight_kg: float = Field(description="Tea in one full container")
+    capacity_utilization_pct: float = Field(
+        description="Share of the container's volume filled — comparable across types"
+    )
+    pallets_per_container: int
+    pallet_stack: int
+
+    payload_kg: float
+    max_payload_kg: float
+    limited_by: str = Field(description="'volume' or 'weight' — what caps this load")
+
+    # The configuration that achieves it, at the same detail as the recommendation
+    package: MaxCapacityPackage
+    carton: MaxCapacityCarton
+    pallet: MaxCapacityPallet
+
+    # What this packing would cost for the simulation's actual shipment quantity.
+    # Always >= the recommendation's total: the optimiser minimises cost, so any
+    # other configuration is by definition no cheaper.
+    total_cost_for_shipment: float
+
+
+class MaxCapacityResponse(BaseModel):
+    """Maximum capacity per container type for these inputs."""
+
+    simulation_id: str
+    options: list[MaxCapacityOption]
+
+    # Headline: the biggest single-container load available
+    absolute_max_container_type: str
+    absolute_max_units: int
+    absolute_max_cartons: int
+    absolute_max_tea_weight_kg: float
+
+    # Honest check against the recommendation, like-for-like (same container type)
+    recommended_container_type: str
+    recommended_units_per_container: int
+    max_units_for_recommended_type: int
+    gain_pct: float
+    cost_delta: float
+    already_maximal: bool = Field(
+        description="True when the recommended plan already fits the most possible "
+        "in its container type"
+    )
+    verdict: str = Field(description="Plain-English reading of the numbers above")
+
+
 # ── Reference data ────────────────────────────────────────────────────────────
 
 class PackageWeightOption(BaseModel):

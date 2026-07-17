@@ -30,6 +30,7 @@ import {
 } from "recharts";
 import { ChatWidget } from "@/components/layout/chat-widget";
 import { Container3DPanel } from "@/components/viz/container-3d-panel";
+import { MaxCapacityPanel } from "@/components/viz/max-capacity-panel";
 import { exportSimulationToExcel } from "@/lib/export";
 import {
   ArrowLeft,
@@ -466,6 +467,11 @@ export default function ResultsPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* ── Maximum capacity ─────────────────────────────────────────── */}
+      {/* Sits right after Container Comparison: it answers "how much fits in one
+          container", so it belongs next to the container numbers it extends. */}
+      <MaxCapacityPanel simulationId={data.id} />
 
       {/* ── 3D load plan ─────────────────────────────────────────────── */}
       <Container3DPanel simulationId={data.id} />
