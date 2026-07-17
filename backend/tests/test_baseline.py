@@ -115,6 +115,27 @@ class TestBaselineIsNotAStrawman:
         expected = fit_rectangles(1200, 1000, 5.898 * 1000, 2.352 * 1000)
         assert b.pallets_per_container == expected.count
 
+    def test_baseline_stacks_less_instead_of_buying_heavier_board(self):
+        """
+        Crush safety must cap the baseline's LAYERS, not upgrade its board.
+
+        An earlier version made the baseline buy 5-ply when the bottom carton was
+        overloaded — the expensive reaction. Real exporters stack one layer fewer,
+        which is free. Forcing the pricey response inflated savings to 54% and
+        made the baseline a strawman again.
+        """
+        from app.optimizers.constants import BOARD_GRADES
+
+        for weight in (100.0, 250.0, 1000.0):
+            b = compute_baseline(0.35, weight, QTY)
+            cap = next(
+                s["max_stack_load_kg"] for s in BOARD_GRADES if s["grade"] == b.board_grade
+            )
+            bottom = (b.layers - 1) * b.carton_weight_kg
+            assert bottom <= cap + 1e-6, (
+                f"{weight}g: {bottom:.1f} kg on {b.board_grade} rated {cap:.0f} kg"
+            )
+
     def test_savings_stay_in_a_defensible_band(self):
         """
         Across the SKU range the saving must be large enough to matter and small

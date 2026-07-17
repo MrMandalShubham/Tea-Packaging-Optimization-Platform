@@ -342,7 +342,29 @@ def compute_baseline(
         if r.carton_weight_kg > 0
         else layers_by_height
     )
-    layers = min(layers_by_height, layers_by_weight)
+    # Stack strength — the same physics the optimiser obeys, applied here so the
+    # comparison stays fair. The bottom carton bears every layer above it, and
+    # the grade's safe load caps how high the stack can go.
+    #
+    # The competent response matters: an earlier version had the baseline BUY
+    # heavier board instead, which is the expensive reaction — it pushed the
+    # claimed savings to 54% and made the baseline a strawman again. A real
+    # exporter's first move is free: stack one layer fewer. So the crush limit
+    # simply becomes a third cap on layers, alongside height and pallet load.
+    idx = next(i for i, s in enumerate(BOARD_GRADES) if s["grade"] == grade)
+    stack_cap_kg = BOARD_GRADES[idx]["max_stack_load_kg"]
+    layers_by_crush = (
+        max(int(stack_cap_kg // r.carton_weight_kg) + 1, 1)
+        if r.carton_weight_kg > 0
+        else layers_by_height
+    )
+    layers = min(layers_by_height, layers_by_weight, layers_by_crush)
+    if layers == layers_by_crush and layers < min(layers_by_height, layers_by_weight):
+        r.assumptions.append(
+            f"Stack limited to {layers} layers so the bottom {grade} carton bears "
+            f"at most {stack_cap_kg:.0f} kg — stacking less is the exporter's "
+            f"cheapest response to crush risk, not buying heavier board."
+        )
 
     r.cartons_per_layer = per_layer
     r.layers = layers

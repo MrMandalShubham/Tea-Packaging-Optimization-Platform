@@ -5,9 +5,11 @@ weight and shipment size, it recommends the pouch, master carton, pallet layout
 and container that minimise **total landed cost** — and shows its working.
 
 On the reference shipment (0.35 g/cm³, 250 g pouches, 100,000 units) it packs
-**2 containers at 67% utilisation instead of 7**, cutting modelled cost from
-₹2,03,060 to ₹1,50,143 — a **26% saving**, with every rupee traced to a named
-decision. Across the SKU range the saving runs **26–50%**.
+**2 containers at 69% utilisation instead of 8**, cutting modelled cost from
+₹2,15,560 to ₹1,56,600 — a **27% saving**, with every rupee traced to a named
+decision. Across the SKU range the saving runs **27–53%**. Plans respect
+real-world loading: 50 mm forklift clearance and crush-safe carton stacks
+(see docs/assumptions.md §3.5).
 
 ---
 
@@ -41,9 +43,9 @@ pouches wins, because it tiles the pallet at 94.9% and stacks two-high.
 | Containers needed | 4 | **2** |
 | Freight | ₹82,500 | **₹41,250** |
 
-(That table compares the two *optimisers* on identical inputs. The 26% headline
-saving above is against modelled current practice, which is a different and
-harder yardstick.)
+(That table compares the two *optimisers* on identical inputs, before the
+operational constraints below existed. The 27% headline saving is against
+modelled current practice — a different and harder yardstick.)
 
 ~15,000 configurations, evaluated exhaustively in **under a second**. So the
 result is the true optimum of the model, not an approximation — and it is
@@ -51,7 +53,7 @@ reproducible and explainable, which a metaheuristic or an LLM guess would not be
 
 ## The comparison is the product
 
-"AI saves you 26%" is only meaningful if the number it is measured against is
+"AI saves you 27%" is only meaningful if the number it is measured against is
 real. So the baseline is **modelled independently** (`optimizers/baseline.py`) and
 costed with the *same* physics and rates:
 
@@ -373,7 +375,9 @@ Every assumption — and what would change if the client corrected it — is in
 
 ## Known gaps
 
-Stated rather than hidden: no authentication, no mixed-SKU containers, no carton
-compression (BCT) modelling, no real carrier freight quotes, and `target_market`
-is recorded but not yet a regulatory constraint. "Export to PDF" is the browser's
+Stated rather than hidden: no authentication, no mixed-SKU containers, no real
+carrier freight quotes, and `target_market` is recorded but not yet a regulatory
+constraint. Carton compression is modelled with conservative default stack
+ratings — replace them with the client's board data before trusting a specific
+board choice. "Export to PDF" is the browser's
 print dialog, not generated PDF.

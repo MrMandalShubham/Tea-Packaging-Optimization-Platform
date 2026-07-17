@@ -62,14 +62,34 @@ TEA_DENSITY = {
     "herbal":      {"min": 0.22, "max": 0.38, "typical": 0.30},
 }
 
-# ── Board grade lookup (carton weight → grade) ─────────────────
-# Lighter cartons use thinner board; heavier need more plies.
+# ── Board grade lookup ──────────────────────────────────────────
+# A grade must satisfy TWO conditions, not one:
+#   max_weight_kg      — the carton's own gross weight (handling strength)
+#   max_stack_load_kg  — the load the BOTTOM carton of a stack can bear
+#                        long-term without crushing.
+#
+# The second was missing, and it mattered: a 9.3 kg carton is comfortably 3-ply
+# by weight, but at the bottom of a 3-layer pallet with another full pallet
+# stacked on top it carries ~48 kg — marginal for 3-ply. Choosing board by
+# contents weight alone produced load plans that would slowly crush in transit.
+#
+# max_stack_load_kg values are CONSERVATIVE DEFAULTS: roughly typical fresh box
+# compression (BCT) for cartons this size divided by a 4x safety factor for
+# transit duration and humidity. Replace with the client's board supplier data
+# or lab BCT results before relying on them for a specific board.
 BOARD_GRADES = [
-    {"max_weight_kg": 10.0,  "grade": "3-ply",  "thickness_mm": 3.0,  "gsm": 350},
-    {"max_weight_kg": 20.0,  "grade": "5-ply",  "thickness_mm": 5.0,  "gsm": 600},
-    {"max_weight_kg": 30.0,  "grade": "7-ply",  "thickness_mm": 7.0,  "gsm": 900},
-    {"max_weight_kg": float("inf"), "grade": "9-ply", "thickness_mm": 9.0, "gsm": 1200},
+    {"max_weight_kg": 10.0,  "grade": "3-ply",  "thickness_mm": 3.0,  "gsm": 350,  "max_stack_load_kg": 35.0},
+    {"max_weight_kg": 20.0,  "grade": "5-ply",  "thickness_mm": 5.0,  "gsm": 600,  "max_stack_load_kg": 80.0},
+    {"max_weight_kg": 30.0,  "grade": "7-ply",  "thickness_mm": 7.0,  "gsm": 900,  "max_stack_load_kg": 140.0},
+    {"max_weight_kg": float("inf"), "grade": "9-ply", "thickness_mm": 9.0, "gsm": 1200, "max_stack_load_kg": 220.0},
 ]
+
+# ── Operational clearance ───────────────────────────────────────
+# Space a forklift needs above the load to actually place it. The pure geometry
+# once produced a double-stacked 40GP plan with 17 mm of roof clearance —
+# mathematically valid, physically unloadable. Every real load plan keeps
+# working room; 50 mm is a common minimum.
+OPERATIONAL_CLEARANCE_MM = 50.0
 
 # ── Packaging material properties ───────────────────────────────
 MATERIALS = {

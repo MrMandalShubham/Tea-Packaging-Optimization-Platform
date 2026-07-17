@@ -34,12 +34,12 @@ Accepted: 0.05–5.0 g/cm³. Realistic tea is 0.18–0.48 (see `tea_density_refs
 The wide bound is deliberate — rejecting an unusual-but-real density is worse than
 letting an analyst model one.
 
-### 1.4 Package Weight ceiling — ⚠ needs client confirmation
+### 1.4 Package Weight range
 
-Capped at 500 g by API validation. Tea is commonly sold in 1 kg retail packs, so
-this limit may be wrong. Raising it is a one-line change to `schemas.py`; it was
-left as-is because the brief describes Package Weight as a **dropdown**, implying
-a fixed set of SKUs the client has not yet supplied.
+Package Weight is a dropdown of retail SKUs (25 g – 2 kg, `package_weight_refs`),
+with the API accepting 1 g – 5 kg. An earlier 500 g cap silently rejected 1 kg
+packs — one of the most common tea SKUs — even though the engine costs them
+correctly; the limit now lives in one constant (`MAX_PACKAGE_WEIGHT_G`).
 
 ---
 
@@ -58,8 +58,8 @@ and roughly 1.1 m of container height is bought and shipped empty. Measured
 result: **36.9% utilisation**.
 
 The joint search enumerates complete configurations and scores each on total
-landed cost. Same inputs, measured result: **69.8% packing density, 2 containers
-instead of 4**. The stage order in the brief is preserved as the *reporting*
+landed cost. Same inputs, measured result: **68.8% packing density, 2 containers
+instead of 4** (with the §3.5 real-world loading constraints applied). The stage order in the brief is preserved as the *reporting*
 structure and as the standalone `POST /optimize/{stage}` endpoints.
 
 ### 2.2 Objective is total landed cost
@@ -106,6 +106,8 @@ calls the real optimiser rather than guessing (see §6).
 | Max carton outer | 800×600×600 mm | Practical corrugator/handling limit |
 | Headspace | 15% of net volume | Settling and seal clearance |
 | Pouch gap in carton | 2 mm | Packing clearance |
+| Operational roof clearance | 50 mm | Forklift working room — see §3.5 |
+| Board stack capacity | 35/80/140/220 kg by ply | Safe bottom-carton load — see §3.5 |
 | Board area factor | 1.2 × surface area | Flaps, glue tabs, trim waste |
 
 ### 3.1 Pallet height vs. container height — ⚠ needs client confirmation
@@ -121,14 +123,16 @@ Measured impact on the reference shipment:
 | Relax to container height | ~77% | 2 | ₹41,250 |
 
 Default keeps the 1.8 m rule **and** allows double-stacking. All three are
-selectable via `Constraints` without touching the search.
+selectable via `Constraints` without touching the search. (Figures in this table
+were measured before the §3.5 operational constraints; the relative picture is
+unchanged.)
 
 ### 3.2 Pallet double-stacking is allowed by default
 
 Two pallets high where height and payload permit. This assumes the goods can bear
 the load — reasonable for cartoned dry tea, and the board grade is selected from
-carton weight. **Not modelled:** box compression testing (BCT) against the stack
-above. A fragile SKU should set `allow_pallet_stacking=False`.
+carton weight. Box compression is modelled conservatively — see §3.5. A fragile SKU should
+still set `allow_pallet_stacking=False`.
 
 ### 3.3 Pallet layer patterns
 
@@ -136,6 +140,36 @@ Cartons are placed in a uniform block, in either orientation, plus a
 "mixed" pattern that fills the leftover margin with rotated cartons. **Not
 modelled:** full interlocking/pinwheel patterns, which could add a few percent.
 Real column stacking (aligned, not interlocked) is assumed for stack strength.
+
+### 3.5 Operational clearance and stack strength — real-world parameters
+
+Added after a production audit, because the pure geometry produced two plans
+that pass every fit check and fail in a real warehouse:
+
+- a double-stacked 40GP with **17 mm** of roof clearance — no forklift can place
+  a 1.18 m pallet with 17 mm to spare;
+- **48 kg** resting on the bottom 3-ply carton of a double-stack — roughly its
+  long-term crush limit, meaning the load slowly fails in transit.
+
+Two constraints now apply, on **both** sides of the comparison:
+
+1. **`operational_clearance_mm` (default 50)** — the pallet build must fit under
+   the container roof minus forklift working room. Configurable; 0 reproduces
+   the pure-geometry answer.
+2. **Stack-aware board grade** — each grade carries a `max_stack_load_kg`
+   (35/80/140/220 kg for 3/5/7/9-ply): the safe long-term load on the bottom
+   carton, ≈ typical fresh BCT ÷ 4 for transit duration and humidity. These are
+   **conservative defaults — replace with the client's board supplier data or
+   lab BCT results.** The optimiser upgrades board (or finds a flatter carton)
+   when a stack would crush; the baseline responds the way a real exporter does
+   — it stacks one layer fewer, which is free, rather than buying heavier board.
+
+Measured effect on the reference shipment: the recommendation moved from an
+unloadable 40GP ×2 (17 mm clearance) to a loadable **40HC ×2 with 110 mm
+clearance and a crush-safe 32 kg bottom-carton load**, and the claimed saving
+fell from 26.1% to **27.4% against the equally-constrained baseline** (both
+sides got more expensive; the gap held). Realism is applied to both sides or it
+is just a new way of cheating.
 
 ### 3.4 Round packages are packed as their bounding box
 

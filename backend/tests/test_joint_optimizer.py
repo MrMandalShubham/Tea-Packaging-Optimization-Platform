@@ -242,6 +242,71 @@ class TestJointSearch:
         for key, cfg in r.by_container_type.items():
             assert cfg.container.container_type == key
 
+    # ── Real-world loadability ───────────────────────────────────────────────
+    # These pin the production audit's findings. The pure geometry once produced
+    # a double-stacked 40GP with 17 mm of roof clearance and 48 kg resting on a
+    # 3-ply carton rated ~35 kg — plans that pass every fit check and fail in a
+    # real warehouse.
+
+    def _all_configs(self, r):
+        seen = [r.best, *r.alternatives, *r.by_container_type.values()]
+        seen += list(r.max_by_container_type.values())
+        return seen
+
+    def test_every_plan_leaves_forklift_clearance(self):
+        from app.optimizers.constants import CONTAINERS
+
+        r = optimize_jointly(DENSITY, WEIGHT_G, QTY)
+        clearance = Constraints().operational_clearance_mm
+        for cfg in self._all_configs(r):
+            internal = CONTAINERS[cfg.container.container_type]["internal_h"] * 1000
+            stack_mm = cfg.container.pallet_stack * cfg.pallet.pallet_height_m * 1000
+            assert internal - stack_mm >= clearance - 1e-6, (
+                f"{cfg.container.container_type}: {internal - stack_mm:.0f} mm "
+                f"clearance — nobody can load that"
+            )
+
+    def test_bottom_carton_never_exceeds_its_board_rating(self):
+        from app.optimizers.joint import bottom_carton_load_kg, _grade_stack_capacity
+
+        r = optimize_jointly(DENSITY, WEIGHT_G, QTY)
+        for cfg in self._all_configs(r):
+            load = bottom_carton_load_kg(
+                cfg.pallet, cfg.carton.carton_weight_kg, cfg.container.pallet_stack
+            )
+            cap = _grade_stack_capacity(cfg.carton.board_grade)
+            assert load <= cap + 1e-6, (
+                f"{load:.1f} kg on {cfg.carton.board_grade} rated {cap:.0f} kg — "
+                f"this stack crushes in transit"
+            )
+
+    def test_clearance_is_a_lever_not_a_hardcode(self):
+        """
+        Zero clearance must reproduce the old tight-fit behaviour (taller stacks
+        allowed), proving the constraint is configurable rather than baked in.
+        """
+        real = optimize_jointly(
+            DENSITY, WEIGHT_G, QTY, constraints=Constraints(operational_clearance_mm=50)
+        )
+        pure = optimize_jointly(
+            DENSITY, WEIGHT_G, QTY, constraints=Constraints(operational_clearance_mm=0)
+        )
+        # The unconstrained geometry can only be equal or cheaper — it has
+        # strictly more room to play with.
+        assert pure.best.total_cost <= real.best.total_cost + 0.01
+
+    def test_realism_costs_money_and_we_admit_it(self):
+        """
+        The loadable plan is allowed to be worse than the unloadable one. If the
+        clearance ever appears free on these inputs, it probably isn't binding
+        and this test should be re-examined rather than celebrated.
+        """
+        pure = optimize_jointly(
+            DENSITY, WEIGHT_G, QTY, constraints=Constraints(operational_clearance_mm=0)
+        )
+        real = optimize_jointly(DENSITY, WEIGHT_G, QTY)
+        assert real.best.total_cost >= pure.best.total_cost
+
     # ── Maximum capacity ─────────────────────────────────────────────────────
 
     def test_max_capacity_is_reported(self):
