@@ -538,6 +538,12 @@ export interface MaxCapacity {
   cost_delta: number;
   already_maximal: boolean;
   verdict: string;
+  /**
+   * 3D load plan for the max-packed container. Embedded rather than fetched
+   * separately: the max configuration is recomputed, never stored, so a second
+   * endpoint would have to re-run the whole search to rebuild the same recipes.
+   */
+  layout: LoadPlan;
 }
 
 export const getMaxCapacity = (simulationId: string) =>

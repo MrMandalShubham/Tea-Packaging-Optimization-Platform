@@ -24,6 +24,7 @@
  */
 
 import { useState } from "react";
+import dynamic from "next/dynamic";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -36,8 +37,19 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Gauge, Info, CheckCircle2 } from "lucide-react";
+import { Gauge, Info, CheckCircle2, Boxes } from "lucide-react";
 import { getMaxCapacity, type MaxCapacity, type MaxCapacityOption } from "@/lib/api";
+
+// Same lazy-loaded scene the recommended plan uses — same chunk, so if the user
+// already opened the other 3D view this one costs nothing extra.
+const ContainerScene = dynamic(() => import("./container-scene"), {
+  ssr: false,
+  loading: () => (
+    <div className="flex h-[28rem] items-center justify-center rounded-md border">
+      <Spinner size="lg" />
+    </div>
+  ),
+});
 
 function tonnes(kg: number) {
   return `${(kg / 1000).toFixed(1)} t`;
@@ -99,6 +111,9 @@ export function MaxCapacityPanel({ simulationId }: { simulationId: string }) {
   const [data, setData] = useState<MaxCapacity | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The 3D scene stays behind a click: three.js is ~600 KB and the numbers above
+  // it answer most questions without it.
+  const [show3d, setShow3d] = useState(false);
 
   async function load() {
     setLoading(true);
@@ -253,6 +268,28 @@ export function MaxCapacityPanel({ simulationId }: { simulationId: string }) {
               </p>
               <AchievingConfig option={headline} />
             </div>
+
+            {/* 3D view of the max-packed container — the same real load plan the
+                numbers above describe, composed from the optimiser's placements. */}
+            {!show3d ? (
+              <div className="flex justify-center">
+                <Button variant="outline" size="sm" onClick={() => setShow3d(true)}>
+                  <Boxes className="mr-1 h-4 w-4" /> View in 3D
+                </Button>
+              </div>
+            ) : (
+              <div data-testid="max-capacity-3d">
+                <ContainerScene plan={data.layout} />
+                <p className="mt-2 text-xs text-muted-foreground">
+                  One full {data.layout.container_type} at maximum:{" "}
+                  {data.layout.carton_layer.length} cartons per layer ×{" "}
+                  {data.layout.layers} layers × {data.layout.pallet_floor.length}{" "}
+                  pallets × {data.layout.pallet_stack} high ={" "}
+                  {data.absolute_max_cartons.toLocaleString()} cartons. Same
+                  clearance and crush rules as the recommended plan.
+                </p>
+              </div>
+            )}
           </div>
         )}
       </CardContent>

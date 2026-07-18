@@ -140,6 +140,47 @@ test.describe("3D load plan geometry", () => {
     }
   });
 
+  test("the max-capacity layout obeys the same physics", async ({ request }) => {
+    // The max view renders a DIFFERENT configuration from the recommended plan —
+    // recomputed, never stored — so it gets the same treatment: compose it and
+    // check it against reality, not against a screenshot.
+    const create = await request.post(`${API}/api/simulation`, {
+      data: {
+        tea_density: 0.35,
+        package_weight: 250,
+        shipment_quantity: 100000,
+        shipment_type: "total_weight",
+        package_shape: "square",
+        packaging_material: "paper",
+      },
+    });
+    expect(create.status(), await create.text()).toBe(201);
+    const { id } = await create.json();
+
+    const res = await request.get(`${API}/api/simulation/${id}/max-capacity`);
+    expect(res.status(), await res.text()).toBe(200);
+    const max = await res.json();
+    const plan: LoadPlan = max.layout;
+
+    const boxes = composeCartons(plan);
+    // The 3D view must show exactly the number the headline claims.
+    expect(boxes.length).toBe(max.absolute_max_cartons);
+    expect(plan.container_type).toBe(max.absolute_max_container_type);
+
+    for (let i = 0; i < boxes.length; i++) {
+      expect(insideContainer(boxes[i], plan)).toBe(true);
+      for (let j = i + 1; j < boxes.length; j++) {
+        if (overlaps(boxes[i], boxes[j])) {
+          throw new Error(`max layout: cartons ${i} and ${j} overlap`);
+        }
+      }
+    }
+
+    // Real-world rules apply to the max plan too: forklift clearance under the roof.
+    const stackTop = plan.pallet_stack * plan.pallet.height_mm;
+    expect(plan.container.height_mm - stackTop).toBeGreaterThanOrEqual(50 - 1e-6);
+  });
+
   test("rotated pallets are honoured, not ignored", async ({ request }) => {
     const { plan } = await planFor(request);
     const rotated = plan.pallet_floor.filter((p) => p.rotated);

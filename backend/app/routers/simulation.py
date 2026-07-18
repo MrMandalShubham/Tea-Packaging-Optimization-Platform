@@ -716,6 +716,68 @@ async def get_max_capacity(simulation_id: str, db: AsyncSession = Depends(get_db
             f"uses more material than it saves in freight."
         )
 
+    # Load plan for the max-packed container, embedded rather than served from a
+    # second endpoint: the max configuration is recomputed, never stored, and the
+    # search that produced it just ran — its pallet/floor recipes are in hand.
+    # A separate endpoint would re-run the whole search to rebuild the same data.
+    abs_spec = CONTAINERS[absolute.container.container_type]
+    layer_placements = absolute.pallet.layer_placements
+    floor_placements = absolute.container.floor_placements
+    composed = (
+        len(layer_placements)
+        * absolute.pallet.layers
+        * len(floor_placements)
+        * absolute.container.pallet_stack
+    )
+    if composed != absolute.container.cartons_per_container:
+        # Same honesty rule as /layout: a 3D view that disagrees with the number
+        # printed beside it is worse than no 3D view.
+        logger.error(
+            "Max-capacity layout drift for %s: composed %d, reported %d",
+            simulation_id,
+            composed,
+            absolute.container.cartons_per_container,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Max-capacity load plan does not reconcile with its own counts",
+        )
+
+    layout = LoadPlanResponse(
+        simulation_id=str(sim.id),
+        container_type=absolute.container.container_type,
+        container=BoxDims(
+            length_mm=abs_spec["internal_l"] * 1000,
+            width_mm=abs_spec["internal_w"] * 1000,
+            height_mm=abs_spec["internal_h"] * 1000,
+        ),
+        pallet=BoxDims(
+            length_mm=PALLET_L_MM,
+            width_mm=PALLET_W_MM,
+            height_mm=absolute.pallet.pallet_height_m * 1000,
+        ),
+        pallet_base_height_mm=PALLET_H_MM,
+        carton=BoxDims(
+            length_mm=absolute.carton.outer_length_mm,
+            width_mm=absolute.carton.outer_width_mm,
+            height_mm=absolute.carton.outer_height_mm,
+        ),
+        carton_layer=[
+            PlacementResponse(x=p.x, y=p.y, rotated=p.rotated)
+            for p in layer_placements
+        ],
+        layers=absolute.pallet.layers,
+        layer_pattern=absolute.pallet.layer_pattern,
+        pallet_floor=[
+            PlacementResponse(x=p.x, y=p.y, rotated=p.rotated)
+            for p in floor_placements
+        ],
+        pallet_stack=absolute.container.pallet_stack,
+        cartons_per_container=absolute.container.cartons_per_container,
+        pallets_per_container=absolute.container.pallets_per_container,
+        capacity_utilization_pct=absolute.container.capacity_utilization_pct,
+    )
+
     abs_tea = absolute.container.units_per_container * i.package_weight / 1000.0
     return MaxCapacityResponse(
         simulation_id=str(sim.id),
@@ -731,6 +793,7 @@ async def get_max_capacity(simulation_id: str, db: AsyncSession = Depends(get_db
         cost_delta=cost_delta,
         already_maximal=already_maximal,
         verdict=verdict,
+        layout=layout,
     )
 
 

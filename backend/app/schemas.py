@@ -607,6 +607,12 @@ class MaxCapacityResponse(BaseModel):
     )
     verdict: str = Field(description="Plain-English reading of the numbers above")
 
+    # The 3D load plan for the max-packed container. Embedded because this
+    # configuration is recomputed rather than stored — the search that found it
+    # just ran, so its placement recipes are already in hand, and a separate
+    # endpoint would have to re-run the entire search to rebuild them.
+    layout: LoadPlanResponse
+
 
 # ── Reference data ────────────────────────────────────────────────────────────
 
