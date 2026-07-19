@@ -161,7 +161,7 @@ async def seed_reference_data(session: AsyncSession) -> None:
         "key",
         "EUR",
         {
-            "name": "EUR / ISO 6780 Pallet",
+            "name": "Industrial 1200×1000 (ISO 6780)",
             "length_mm": PALLET_L_MM,
             "width_mm": PALLET_W_MM,
             "height_mm": PALLET_H_MM,

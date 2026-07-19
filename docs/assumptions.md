@@ -99,7 +99,7 @@ calls the real optimiser rather than guessing (see §6).
 | Constraint | Value | Source / rationale |
 |---|---|---|
 | Container interiors | ISO 668 | 20GP 5.898×2.352×2.385 m, 40GP 12.032×2.352×2.385 m, 40HC 12.032×2.352×2.698 m |
-| Pallet | EUR / ISO 6780 | 1200×1000×150 mm, 25 kg tare |
+| Pallet | Industrial 1200×1000 (ISO 6780) | 150 mm deck, 25 kg tare — see §3.4 |
 | Max pallet load | 1000 kg | Common export limit |
 | Max pallet height | 1.8 m incl. pallet | Warehouse racking convention — ⚠ see §3.1 |
 | Max carton weight | 25 kg | Manual handling limit |
@@ -141,6 +141,22 @@ Cartons are placed in a uniform block, in either orientation, plus a
 modelled:** full interlocking/pinwheel patterns, which could add a few percent.
 Real column stacking (aligned, not interlocked) is assumed for stack strength.
 
+### 3.4 Pallet type is fixed — ⚠ confirm the client's pallet
+
+The pallet is a constant, not an optimisation variable: one standard
+**1200 × 1000 mm industrial pallet** (an ISO 6780 size, sometimes called
+EUR2). What the optimiser decides is everything built *on* it — cartons per
+layer, orientation pattern, layer count, stacking.
+
+Naming caution: the classic **EUR/EPAL pallet is 1200 × 800 mm**, a different
+footprint. 1200 × 1000 was chosen because it is the common containerised-export
+choice (20 fit a 40-ft floor cleanly). **If the client ships on true 1200 × 800
+EUR1 pallets, every downstream number changes** — layer fits, floor counts,
+utilisation. The change is confined to `PALLET_L` / `PALLET_W` in
+`optimizers/constants.py`; the whole search adapts automatically. Making pallet
+type a compared dimension (like the three container types) would be a natural
+extension if a client runs mixed fleets.
+
 ### 3.5 Operational clearance and stack strength — real-world parameters
 
 Added after a production audit, because the pure geometry produced two plans
@@ -171,7 +187,7 @@ fell from 26.1% to **27.4% against the equally-constrained baseline** (both
 sides got more expensive; the gap held). Realism is applied to both sides or it
 is just a new way of cheating.
 
-### 3.4 Round packages are packed as their bounding box
+### 3.6 Round packages are packed as their bounding box
 
 A cylinder occupies its bounding square in the carton. This is honest but
 pessimistic — it means ~21% (1 − π/4) of the carton cavity is air, which is

@@ -102,7 +102,13 @@ larger than 800 × 600 × 600 mm.
 
 ## 5. Step 3 — Stacking cartons on a pallet
 
-A pallet is a fixed floor of **1200 × 1000 mm**. Cartons per layer is simple
+A pallet is a fixed floor of **1200 × 1000 mm** — the standard industrial
+export pallet. The pallet itself is a constant, never optimised; what the
+system decides is everything built on it. (Note for pallet pedants: the
+classic "EUR" pallet is 1200 × 800 mm — a different size. If a client uses
+those, one constant changes and the whole search adapts.)
+
+Cartons per layer is simple
 division, rounded down:
 
 ```
