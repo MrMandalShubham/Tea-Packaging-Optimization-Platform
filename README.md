@@ -11,6 +11,10 @@ decision. Across the SKU range the saving runs **27–53%**. Plans respect
 real-world loading: 50 mm forklift clearance and crush-safe carton stacks
 (see docs/assumptions.md §3.5).
 
+**New to the project?** [docs/how-it-works.md](docs/how-it-works.md) walks
+through the complete logic and math in plain language, with every number
+verifiable against the reference case.
+
 ---
 
 ## The core idea
