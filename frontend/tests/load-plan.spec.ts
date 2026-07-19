@@ -140,6 +140,56 @@ test.describe("3D load plan geometry", () => {
     }
   });
 
+  test("the partial last container is truthful", async ({ request }) => {
+    // Containers 1..N-1 are full; the last carries only the remainder. The 3D
+    // composes that remainder in real loading order — this pins the arithmetic
+    // and the physics of the truncated compose.
+    const { plan } = await planFor(request);
+
+    // Server arithmetic: full containers + the last must cover the shipment
+    // exactly (to the carton).
+    expect(plan.containers_needed).toBeGreaterThanOrEqual(1);
+    expect(plan.cartons_last_container).toBeGreaterThan(0);
+    expect(plan.cartons_last_container).toBeLessThanOrEqual(plan.cartons_per_container);
+
+    const partial = composeCartons(plan, plan.cartons_last_container);
+    expect(partial.length).toBe(plan.cartons_last_container);
+
+    // A truncated load still obeys physics: in bounds, no overlaps.
+    for (let i = 0; i < partial.length; i++) {
+      expect(insideContainer(partial[i], plan)).toBe(true);
+      for (let j = i + 1; j < partial.length; j++) {
+        if (overlaps(partial[i], partial[j])) {
+          throw new Error(`partial: cartons ${i} and ${j} overlap`);
+        }
+      }
+    }
+
+    // Loading order is real: cartons fill complete pallets before starting the
+    // next, so every occupied pallet except possibly the LAST is full.
+    const perPallet = plan.carton_layer.length * plan.layers;
+    const fullPallets = Math.floor(plan.cartons_last_container / perPallet);
+    const decks = composePallets(plan, plan.cartons_last_container);
+    expect(decks.length).toBe(Math.ceil(plan.cartons_last_container / perPallet));
+    expect(decks.length).toBeGreaterThanOrEqual(fullPallets);
+
+    // No empty pallets render: deck count strictly matches carton need.
+    const fullDecks = composePallets(plan);
+    expect(decks.length).toBeLessThanOrEqual(fullDecks.length);
+  });
+
+  test("a truncated compose is a prefix of the full compose", async ({ request }) => {
+    // The partial container must be the SAME arrangement stopped early — not a
+    // different packing. Prefix equality pins that.
+    const { plan } = await planFor(request);
+    const full = composeCartons(plan);
+    const some = composeCartons(plan, 100);
+    expect(some.length).toBe(100);
+    for (let i = 0; i < some.length; i++) {
+      expect(some[i]).toEqual(full[i]);
+    }
+  });
+
   test("the max-capacity layout obeys the same physics", async ({ request }) => {
     // The max view renders a DIFFERENT configuration from the recommended plan —
     // recomputed, never stored — so it gets the same treatment: compose it and

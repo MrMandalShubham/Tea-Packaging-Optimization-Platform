@@ -460,6 +460,11 @@ export interface LoadPlan {
   cartons_per_container: number;
   pallets_per_container: number;
   capacity_utilization_pct: number;
+
+  /** Containers this shipment books. 1..N-1 are identical full loads. */
+  containers_needed: number;
+  /** Cartons aboard the LAST container — usually short of a full load. */
+  cartons_last_container: number;
 }
 
 export const getLoadPlan = (simulationId: string) =>

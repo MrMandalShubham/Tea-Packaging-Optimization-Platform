@@ -3,6 +3,7 @@ Simulation router — CRUD endpoints for full optimization simulations.
 """
 
 import logging
+import math
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select, desc
@@ -586,6 +587,16 @@ async def get_load_plan(simulation_id: str, db: AsyncSession = Depends(get_db)):
         cartons_per_container=best.cartons_per_container,
         pallets_per_container=best.pallets_per_container or floor.count,
         capacity_utilization_pct=best.capacity_utilization_pct,
+        containers_needed=best.containers_needed,
+        # The final container carries whatever the full ones don't. For a
+        # sub-container order (N=1) this is the whole shipment — the only
+        # container IS the partial one, and the 3D should show that rather than
+        # a full load that was never booked.
+        cartons_last_container=max(
+            math.ceil(best.total_units_shipped / carton.units_per_carton)
+            - (best.containers_needed - 1) * best.cartons_per_container,
+            0,
+        ),
     )
 
 
@@ -776,6 +787,9 @@ async def get_max_capacity(simulation_id: str, db: AsyncSession = Depends(get_db
         cartons_per_container=absolute.container.cartons_per_container,
         pallets_per_container=absolute.container.pallets_per_container,
         capacity_utilization_pct=absolute.container.capacity_utilization_pct,
+        # Capacity view: by definition one FULL container — no partial here.
+        containers_needed=1,
+        cartons_last_container=absolute.container.cartons_per_container,
     )
 
     abs_tea = absolute.container.units_per_container * i.package_weight / 1000.0

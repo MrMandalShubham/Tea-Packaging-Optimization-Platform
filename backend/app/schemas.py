@@ -509,6 +509,17 @@ class LoadPlanResponse(BaseModel):
     pallets_per_container: int
     capacity_utilization_pct: float
 
+    # How many containers this shipment books, and how many cartons ride in the
+    # LAST one. Containers 1..N-1 are identical full loads of the recipe above;
+    # the last usually is not — and for a sub-container order the only container
+    # IS the partial one. The client renders any container truthfully from these
+    # two numbers plus the recipe: full ones at cartons_per_container, the last
+    # truncated at cartons_last_container in loading order.
+    containers_needed: int = 1
+    cartons_last_container: int = Field(
+        default=0, description="Cartons in the final (possibly part-full) container"
+    )
+
 
 # ── Maximum capacity ──────────────────────────────────────────────────────────
 

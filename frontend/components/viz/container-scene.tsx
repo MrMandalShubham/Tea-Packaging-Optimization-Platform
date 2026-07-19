@@ -76,9 +76,10 @@ function Cartons({ boxes, cartonH }: { boxes: Box[]; cartonH: number }) {
   );
 }
 
-/** Pallet decks, so the double-stacking reads clearly. */
-function Pallets({ plan }: { plan: LoadPlan }) {
-  const decks = useMemo(() => composePallets(plan), [plan]);
+/** Pallet decks, so the double-stacking reads clearly. Only decks that carry
+    at least one carton render — a part-full container has no empty pallets. */
+function Pallets({ plan, cartonLimit }: { plan: LoadPlan; cartonLimit?: number }) {
+  const decks = useMemo(() => composePallets(plan, cartonLimit), [plan, cartonLimit]);
 
   return (
     <>
@@ -113,8 +114,8 @@ function ContainerShell({ plan }: { plan: LoadPlan }) {
   );
 }
 
-function Scene({ plan }: { plan: LoadPlan }) {
-  const boxes = useMemo(() => composeCartons(plan), [plan]);
+function Scene({ plan, cartonLimit }: { plan: LoadPlan; cartonLimit?: number }) {
+  const boxes = useMemo(() => composeCartons(plan, cartonLimit), [plan, cartonLimit]);
   const cartonH = plan.carton.height_mm * MM;
   const l = plan.container.length_mm * MM;
   const w = plan.container.width_mm * MM;
@@ -128,7 +129,7 @@ function Scene({ plan }: { plan: LoadPlan }) {
         {/* Recentre so OrbitControls turns around the container, not the origin. */}
         <group position={[-l / 2, -h / 2, -w / 2]}>
           <ContainerShell plan={plan} />
-          <Pallets plan={plan} />
+          <Pallets plan={plan} cartonLimit={cartonLimit} />
           <Cartons boxes={boxes} cartonH={cartonH} />
         </group>
       </Bounds>
@@ -145,12 +146,28 @@ function Scene({ plan }: { plan: LoadPlan }) {
   );
 }
 
-export default function ContainerScene({ plan }: { plan: LoadPlan }) {
-  const cartonCount =
+export default function ContainerScene({
+  plan,
+  cartonLimit,
+  label,
+}: {
+  plan: LoadPlan;
+  /** Cartons actually aboard THIS container — the last one is usually short. */
+  cartonLimit?: number;
+  /** e.g. "Container 2 of 2 — partial load" */
+  label?: string;
+}) {
+  const fullCount =
     plan.carton_layer.length *
     plan.layers *
     plan.pallet_floor.length *
     plan.pallet_stack;
+  const cartonCount = Math.min(cartonLimit ?? fullCount, fullCount);
+  const perPallet = plan.carton_layer.length * plan.layers;
+  const palletCount =
+    perPallet > 0
+      ? Math.ceil(cartonCount / perPallet)
+      : plan.pallet_floor.length * plan.pallet_stack;
 
   return (
     <div
@@ -169,17 +186,23 @@ export default function ContainerScene({ plan }: { plan: LoadPlan }) {
           </div>
         }
       >
-        <Scene plan={plan} />
+        <Scene plan={plan} cartonLimit={cartonLimit} />
       </Canvas>
 
       <div className="pointer-events-none absolute left-3 top-3 rounded bg-background/85 px-2.5 py-1.5 text-[11px] leading-relaxed shadow-sm backdrop-blur">
-        <div className="font-medium">{plan.container_type}</div>
-        <div className="text-muted-foreground">
-          {cartonCount.toLocaleString()} cartons ·{" "}
-          {(plan.pallet_floor.length * plan.pallet_stack).toLocaleString()} pallets
+        <div className="font-medium">
+          {plan.container_type}
+          {label ? <span className="ml-1.5 font-normal text-muted-foreground">{label}</span> : null}
         </div>
         <div className="text-muted-foreground">
-          {plan.capacity_utilization_pct}% packed · {plan.layer_pattern}
+          {cartonCount.toLocaleString()} cartons ·{" "}
+          {palletCount.toLocaleString()} pallets
+        </div>
+        <div className="text-muted-foreground">
+          {/* Scaled to the cartons actually aboard — quoting the full-container
+              density on a part-full load would overstate it. */}
+          {((plan.capacity_utilization_pct * cartonCount) / fullCount).toFixed(1)}%
+          packed · {plan.layer_pattern}
         </div>
       </div>
 
