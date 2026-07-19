@@ -165,7 +165,9 @@ def _pick_catalogue_pouch(required_volume_cm3: float) -> tuple[float, float, flo
     return STANDARD_POUCH_SIZES_MM[-1]
 
 
-def _uniform_layer_fit(carton_l: float, carton_w: float) -> int:
+def _uniform_layer_fit(
+    carton_l: float, carton_w: float, pallet_l: float = PALLET_L_MM, pallet_w: float = PALLET_W_MM
+) -> int:
     """
     Cartons per pallet layer in a single uniform orientation.
 
@@ -177,13 +179,19 @@ def _uniform_layer_fit(carton_l: float, carton_w: float) -> int:
     if carton_l <= 0 or carton_w <= 0:
         return 0
     return max(
-        int(PALLET_L_MM // carton_l) * int(PALLET_W_MM // carton_w),
-        int(PALLET_L_MM // carton_w) * int(PALLET_W_MM // carton_l),
+        int(pallet_l // carton_l) * int(pallet_w // carton_w),
+        int(pallet_l // carton_w) * int(pallet_w // carton_l),
     )
 
 
 def _pick_catalogue_carton(
-    pouch_l: float, pouch_w: float, pouch_h: float, package_weight_kg: float
+    pouch_l: float,
+    pouch_w: float,
+    pouch_h: float,
+    package_weight_kg: float,
+    pallet_l: float = PALLET_L_MM,
+    pallet_w: float = PALLET_W_MM,
+    pallet_deck: float = PALLET_H_MM,
 ) -> tuple[tuple[float, float, float], int, tuple[int, int, int]]:
     """
     Pick the stock carton a competent exporter would pick: the one that yields the
@@ -204,7 +212,7 @@ def _pick_catalogue_carton(
     Pouches still go into the stock box in one fixed orientation: choosing a box
     is a decision made once, per-SKU pouch rotation puzzles are not.
     """
-    usable_mm = PALLET_MAX_HEIGHT * 1000 - PALLET_H_MM
+    usable_mm = PALLET_MAX_HEIGHT * 1000 - pallet_deck
     best: Optional[tuple] = None
 
     for dims in STANDARD_CARTON_SIZES_MM:
@@ -219,7 +227,7 @@ def _pick_catalogue_carton(
             if units < 1:
                 continue
 
-        per_layer = _uniform_layer_fit(cl, cw)
+        per_layer = _uniform_layer_fit(cl, cw, pallet_l, pallet_w)
         if per_layer < 1:
             continue
         layers = max(int(usable_mm // ch), 1)
@@ -242,6 +250,10 @@ def compute_baseline(
     shipment_quantity: int,
     material: str = "paper",
     distance_nm: float = DEFAULT_DISTANCE_NM,
+    # The pallet the exporter ships on — identical to the optimiser's, because a
+    # comparison where the two sides ride different pallets measures the pallet,
+    # not the optimisation.
+    pallet: dict | None = None,
     # User-supplied overrides — if the exporter knows their real numbers, those
     # beat any model of "typical practice".
     current_package_l: Optional[float] = None,
@@ -271,6 +283,16 @@ def compute_baseline(
         raise ValueError("package_weight_g must be positive")
     if shipment_quantity <= 0:
         raise ValueError("shipment_quantity must be positive")
+
+    pal = pallet or {
+        "length_mm": PALLET_L_MM,
+        "width_mm": PALLET_W_MM,
+        "deck_mm": PALLET_H_MM,
+        "max_load_kg": PALLET_MAX_LOAD,
+        "tare_kg": PALLET_TARE_KG,
+    }
+    pal_l, pal_w = pal["length_mm"], pal["width_mm"]
+    pal_deck, pal_load, pal_tare = pal["deck_mm"], pal["max_load_kg"], pal["tare_kg"]
 
     r = BaselineResult()
     package_weight_kg = package_weight_g / 1000.0
@@ -302,7 +324,8 @@ def compute_baseline(
 
     # ── Carton ───────────────────────────────────────────────────────────────
     (cl, cw, ch), units, _arr = _pick_catalogue_carton(
-        r.package_length_mm, r.package_width_mm, r.package_height_mm, package_weight_kg
+        r.package_length_mm, r.package_width_mm, r.package_height_mm,
+        package_weight_kg, pal_l, pal_w, pal_deck,
     )
     r.carton_length_mm = current_carton_l or cl
     r.carton_width_mm = current_carton_w or cw
@@ -334,11 +357,11 @@ def compute_baseline(
     r.board_grade = grade
 
     # ── Pallet — uniform layers; rotation allowed, mixing not ───────────────
-    per_layer = max(_uniform_layer_fit(r.carton_length_mm, r.carton_width_mm), 1)
-    usable_mm = PALLET_MAX_HEIGHT * 1000 - PALLET_H_MM
+    per_layer = max(_uniform_layer_fit(r.carton_length_mm, r.carton_width_mm, pal_l, pal_w), 1)
+    usable_mm = PALLET_MAX_HEIGHT * 1000 - pal_deck
     layers_by_height = max(int(usable_mm // r.carton_height_mm), 1)
     layers_by_weight = (
-        max(int(PALLET_MAX_LOAD // (per_layer * r.carton_weight_kg)), 1)
+        max(int(pal_load // (per_layer * r.carton_weight_kg)), 1)
         if r.carton_weight_kg > 0
         else layers_by_height
     )
@@ -377,7 +400,7 @@ def compute_baseline(
             f"the layer is rotated to whichever way fits more, but orientations are "
             f"not mixed within a layer."
         )
-    r.pallet_height_m = round((PALLET_H_MM + layers * r.carton_height_mm) / 1000.0, 3)
+    r.pallet_height_m = round((pal_deck + layers * r.carton_height_mm) / 1000.0, 3)
     r.pallet_weight_kg = round(r.cartons_per_pallet * r.carton_weight_kg, 2)
 
     # ── Container — 20GP, floor-loaded, no pallet stacking ──────────────────
@@ -394,7 +417,7 @@ def compute_baseline(
     ct = CONTAINERS[BASELINE_CONTAINER]
     r.container_type = BASELINE_CONTAINER
     floor = fit_rectangles(
-        PALLET_L_MM, PALLET_W_MM, ct["internal_l"] * 1000, ct["internal_w"] * 1000
+        pal_l, pal_w, ct["internal_l"] * 1000, ct["internal_w"] * 1000
     )
     r.pallets_per_container = max(floor.count, 1)
     r.assumptions.append(
@@ -408,7 +431,7 @@ def compute_baseline(
     # Respect the payload limit the same way the optimiser does.
     payload = (
         r.cartons_per_container * r.carton_weight_kg
-        + r.pallets_per_container * PALLET_TARE_KG
+        + r.pallets_per_container * pal_tare
     )
     if payload > ct["max_payload_kg"] and r.carton_weight_kg > 0:
         max_cartons = int(

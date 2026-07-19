@@ -85,6 +85,11 @@ class SimulationCreateRequest(BaseModel):
         default=None, max_length=100,
         description="Optional target market for regulatory constraints",
     )
+    pallet_type: str = Field(
+        default="industrial",
+        max_length=20,
+        description="Pallet the exporter ships on: industrial | eur1 | gma",
+    )
 
     model_config = {"extra": "forbid"}
 
@@ -670,6 +675,16 @@ class ContainerSpecOption(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class PalletTypeOption(BaseModel):
+    key: str
+    name: str
+    length_mm: float
+    width_mm: float
+    is_default: bool = False
+
+    model_config = {"from_attributes": True}
+
+
 class ReferenceDataResponse(BaseModel):
     """
     Master data backing the form dropdowns.
@@ -684,6 +699,7 @@ class ReferenceDataResponse(BaseModel):
     materials: list[MaterialOption] = []
     package_types: list[PackageTypeOption] = []
     containers: list[ContainerSpecOption] = []
+    pallet_types: list[PalletTypeOption] = []
     min_package_weight_g: float
     max_package_weight_g: float
     min_tea_density: float

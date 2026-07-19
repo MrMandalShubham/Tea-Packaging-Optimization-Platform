@@ -23,8 +23,10 @@ from app.models import (
     PackagingMaterialRef,
     PackageTypeRef,
     ContainerSpec,
+    PalletSpec,
 )
 from app.optimizers.constants import (
+    DEFAULT_PALLET_TYPE,
     MAX_PACKAGE_WEIGHT_G,
     MIN_PACKAGE_WEIGHT_G,
     MAX_TEA_DENSITY,
@@ -37,6 +39,7 @@ from app.schemas import (
     MaterialOption,
     PackageTypeOption,
     ContainerSpecOption,
+    PalletTypeOption,
 )
 
 logger = logging.getLogger(__name__)
@@ -66,6 +69,9 @@ async def get_reference_data(db: AsyncSession = Depends(get_db)) -> ReferenceDat
         containers = (
             await db.execute(select(ContainerSpec).order_by(ContainerSpec.volume_m3))
         ).scalars().all()
+        pallets = (
+            await db.execute(select(PalletSpec).order_by(PalletSpec.key))
+        ).scalars().all()
     except Exception:
         logger.exception("Failed to load reference data")
         raise HTTPException(status_code=503, detail="Reference data unavailable")
@@ -76,6 +82,16 @@ async def get_reference_data(db: AsyncSession = Depends(get_db)) -> ReferenceDat
         materials=[MaterialOption.model_validate(m) for m in materials],
         package_types=[PackageTypeOption.model_validate(t) for t in types],
         containers=[ContainerSpecOption.model_validate(c) for c in containers],
+        pallet_types=[
+            PalletTypeOption(
+                key=p.key,
+                name=p.name,
+                length_mm=p.length_mm,
+                width_mm=p.width_mm,
+                is_default=(p.key == DEFAULT_PALLET_TYPE),
+            )
+            for p in pallets
+        ],
         min_package_weight_g=MIN_PACKAGE_WEIGHT_G,
         max_package_weight_g=MAX_PACKAGE_WEIGHT_G,
         min_tea_density=MIN_TEA_DENSITY,

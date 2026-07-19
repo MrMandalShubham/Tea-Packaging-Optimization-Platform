@@ -266,6 +266,10 @@ def _run_what_if(args: dict, sim_inputs: dict) -> dict:
         "package_shape": args.get(
             "package_shape", sim_inputs.get("package_shape", "square")
         ),
+        # Not exposed as a what-if knob — the pallet is the exporter's fleet,
+        # not a lever — but the re-run must ride the same pallet as the original
+        # or the comparison silently measures the pallet swap too.
+        "pallet_type": sim_inputs.get("pallet_type", "industrial"),
     }
 
     constraints = None
@@ -373,6 +377,7 @@ async def _load_simulation_context(
         "shipment_quantity": i.shipment_quantity,
         "packaging_material": i.packaging_material,
         "package_shape": i.package_shape,
+        "pallet_type": i.pallet_type or "industrial",
     }
 
     best_pkg = next((p for p in sim.package_options if p.is_best), None)
@@ -385,7 +390,8 @@ async def _load_simulation_context(
         "CURRENT SIMULATION",
         f"Inputs: density {i.tea_density} g/cm3, {i.package_weight} g per pouch, "
         f"{i.shipment_quantity:,} pouches, {i.packaging_material}, {i.package_shape}"
-        + (f", market {i.target_market}" if i.target_market else ""),
+        + (f", market {i.target_market}" if i.target_market else "")
+        + f", pallet {i.pallet_type or 'industrial'}",
     ]
     if best_pkg:
         lines.append(

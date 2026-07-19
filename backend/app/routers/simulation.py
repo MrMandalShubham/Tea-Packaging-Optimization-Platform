@@ -49,7 +49,11 @@ from app.schemas import (
     MaxCapacityPallet,
 )
 from app.optimizers.joint import fit_rectangles
-from app.optimizers.constants import CONTAINERS, PALLET_L_MM, PALLET_W_MM, PALLET_H_MM
+from app.optimizers.constants import (
+    CONTAINERS,
+    DEFAULT_PALLET_TYPE,
+    PALLET_TYPES,
+)
 from app.services.simulation_service import run_full_pipeline
 from app.services.ai_service import analyze_results
 
@@ -175,6 +179,7 @@ async def create_simulation(body: SimulationCreateRequest, db: AsyncSession = De
             package_shape=body.package_shape.value,
             packaging_material=body.packaging_material.value,
             target_market=body.target_market,
+            pallet_type=body.pallet_type,
         )
         db.add(inputs)
 
@@ -187,6 +192,7 @@ async def create_simulation(body: SimulationCreateRequest, db: AsyncSession = De
             package_shape=body.package_shape.value,
             packaging_material=body.packaging_material.value,
             target_market=body.target_market,
+            pallet_type=body.pallet_type,
         )
 
         # 5. Save package options
@@ -420,6 +426,7 @@ async def get_simulation(simulation_id: str, db: AsyncSession = Depends(get_db))
             package_shape=sim.inputs.package_shape,
             packaging_material=sim.inputs.packaging_material,
             target_market=sim.inputs.target_market,
+            pallet_type=sim.inputs.pallet_type or DEFAULT_PALLET_TYPE,
         )
 
     # Package options
@@ -516,6 +523,7 @@ async def get_load_plan(simulation_id: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
         select(Simulation)
         .options(
+            selectinload(Simulation.inputs),
             selectinload(Simulation.carton_config),
             selectinload(Simulation.pallet_config),
             selectinload(Simulation.container_configs),
@@ -540,10 +548,16 @@ async def get_load_plan(simulation_id: str, db: AsyncSession = Depends(get_db)):
             status_code=500, detail=f"Unknown container type {best.container_type}"
         )
 
+    # The recompute must ride the SAME pallet the stored result was solved on,
+    # or the drift check below fires for every non-default pallet.
+    pal_key = sim.inputs.pallet_type if sim.inputs else DEFAULT_PALLET_TYPE
+    pal = PALLET_TYPES.get(pal_key, PALLET_TYPES[DEFAULT_PALLET_TYPE])
+    pal_l, pal_w, pal_deck = pal["length_mm"], pal["width_mm"], pal["deck_mm"]
+
     # Cartons are stacked by their OUTER dimensions — board has thickness.
-    layer = fit_rectangles(carton.length, carton.width, PALLET_L_MM, PALLET_W_MM)
+    layer = fit_rectangles(carton.length, carton.width, pal_l, pal_w)
     floor = fit_rectangles(
-        PALLET_L_MM, PALLET_W_MM, spec["internal_l"] * 1000, spec["internal_w"] * 1000
+        pal_l, pal_w, spec["internal_l"] * 1000, spec["internal_w"] * 1000
     )
 
     if layer.count != pallet.cartons_per_layer:
@@ -567,11 +581,11 @@ async def get_load_plan(simulation_id: str, db: AsyncSession = Depends(get_db)):
             height_mm=spec["internal_h"] * 1000,
         ),
         pallet=BoxDims(
-            length_mm=PALLET_L_MM,
-            width_mm=PALLET_W_MM,
+            length_mm=pal_l,
+            width_mm=pal_w,
             height_mm=pallet.pallet_height * 1000,
         ),
-        pallet_base_height_mm=PALLET_H_MM,
+        pallet_base_height_mm=pal_deck,
         carton=BoxDims(
             length_mm=carton.length, width_mm=carton.width, height_mm=carton.height
         ),
@@ -640,6 +654,7 @@ async def get_max_capacity(simulation_id: str, db: AsyncSession = Depends(get_db
             package_shape=i.package_shape,
             packaging_material=i.packaging_material,
             target_market=i.target_market,
+            pallet_type=i.pallet_type or DEFAULT_PALLET_TYPE,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -732,6 +747,9 @@ async def get_max_capacity(simulation_id: str, db: AsyncSession = Depends(get_db
     # search that produced it just ran — its pallet/floor recipes are in hand.
     # A separate endpoint would re-run the whole search to rebuild the same data.
     abs_spec = CONTAINERS[absolute.container.container_type]
+    max_pal = PALLET_TYPES.get(
+        i.pallet_type or DEFAULT_PALLET_TYPE, PALLET_TYPES[DEFAULT_PALLET_TYPE]
+    )
     layer_placements = absolute.pallet.layer_placements
     floor_placements = absolute.container.floor_placements
     composed = (
@@ -763,11 +781,11 @@ async def get_max_capacity(simulation_id: str, db: AsyncSession = Depends(get_db
             height_mm=abs_spec["internal_h"] * 1000,
         ),
         pallet=BoxDims(
-            length_mm=PALLET_L_MM,
-            width_mm=PALLET_W_MM,
+            length_mm=max_pal["length_mm"],
+            width_mm=max_pal["width_mm"],
             height_mm=absolute.pallet.pallet_height_m * 1000,
         ),
-        pallet_base_height_mm=PALLET_H_MM,
+        pallet_base_height_mm=max_pal["deck_mm"],
         carton=BoxDims(
             length_mm=absolute.carton.outer_length_mm,
             width_mm=absolute.carton.outer_width_mm,

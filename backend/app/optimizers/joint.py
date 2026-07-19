@@ -89,6 +89,14 @@ class Constraints:
     allow_pallet_stacking: bool = True   # may pallets be double-stacked in-container?
     max_pallet_stack: int = 2
 
+    # The pallet the exporter ships on. An input (their fleet dictates it),
+    # never an optimisation variable; both the optimiser and the baseline use
+    # the same one so the comparison stays fair.
+    pallet_length_mm: float = PALLET_L_MM
+    pallet_width_mm: float = PALLET_W_MM
+    pallet_deck_mm: float = PALLET_H_MM
+    pallet_tare_kg: float = PALLET_TARE_KG
+
     # Working room a forklift needs between the top of the load and the container
     # roof. Without it the search once recommended a double-stacked 40GP with
     # 17 mm of clearance — a plan no one can physically load. Set to 0 only to
@@ -102,7 +110,7 @@ class Constraints:
     def __post_init__(self) -> None:
         if self.max_carton_weight_kg <= 0:
             raise ValueError("max_carton_weight_kg must be positive")
-        if self.max_pallet_height_m * 1000 <= PALLET_H_MM:
+        if self.max_pallet_height_m * 1000 <= self.pallet_deck_mm:
             raise ValueError("max_pallet_height_m must exceed the pallet's own height")
         if self.max_units_per_axis < 1:
             raise ValueError("max_units_per_axis must be >= 1")
@@ -417,7 +425,12 @@ def _grade_stack_capacity(grade: str) -> float:
     return BOARD_GRADES[_grade_index(grade)]["max_stack_load_kg"]
 
 
-def bottom_carton_load_kg(pallet: "JointPallet", carton_weight_kg: float, stack: int) -> float:
+def bottom_carton_load_kg(
+    pallet: "JointPallet",
+    carton_weight_kg: float,
+    stack: int,
+    pallet_tare_kg: float = PALLET_TARE_KG,
+) -> float:
     """
     Static load on the worst-placed carton: bottom layer of the bottom pallet.
 
@@ -427,7 +440,7 @@ def bottom_carton_load_kg(pallet: "JointPallet", carton_weight_kg: float, stack:
     """
     load = (pallet.layers - 1) * carton_weight_kg
     if stack > 1:
-        load += (pallet.total_weight_kg + PALLET_TARE_KG) / pallet.cartons_per_layer
+        load += (pallet.total_weight_kg + pallet_tare_kg) / pallet.cartons_per_layer
     return load
 
 
@@ -517,13 +530,16 @@ def _build_pallet(
     the sequential pipeline could not express.
     """
     layer = fit_rectangles(
-        carton.outer_length_mm, carton.outer_width_mm, PALLET_L_MM, PALLET_W_MM
+        carton.outer_length_mm,
+        carton.outer_width_mm,
+        c.pallet_length_mm,
+        c.pallet_width_mm,
     )
     per_layer, pattern = layer.count, layer.pattern
     if per_layer < 1:
         return None
 
-    usable_mm = max_height_mm - PALLET_H_MM
+    usable_mm = max_height_mm - c.pallet_deck_mm
     if usable_mm < carton.outer_height_mm:
         return None
 
@@ -538,13 +554,13 @@ def _build_pallet(
         return None
 
     load_kg = per_layer * layers * carton.carton_weight_kg
-    height_m = (PALLET_H_MM + layers * carton.outer_height_mm) / 1000.0
+    height_m = (c.pallet_deck_mm + layers * carton.outer_height_mm) / 1000.0
 
     footprint = (
         per_layer
         * carton.outer_length_mm
         * carton.outer_width_mm
-        / (PALLET_L_MM * PALLET_W_MM)
+        / (c.pallet_length_mm * c.pallet_width_mm)
         * 100
     )
 
@@ -642,7 +658,7 @@ def optimize_jointly(
                             # term this once produced a double-stacked 40GP plan
                             # with 17 mm to the roof — unloadable in practice.
                             avail_mm = ct_h_mm - c.operational_clearance_mm
-                            if avail_mm <= PALLET_H_MM:
+                            if avail_mm <= c.pallet_deck_mm:
                                 continue
                             cap_mm = min(c.max_pallet_height_m * 1000, avail_mm / stack)
                             variant = carton
@@ -658,7 +674,8 @@ def optimize_jointly(
                             # so the pallet is recomputed and re-checked.
                             for _ in range(len(BOARD_GRADES)):
                                 load = bottom_carton_load_kg(
-                                    pallet, variant.carton_weight_kg, stack
+                                    pallet, variant.carton_weight_kg, stack,
+                                    c.pallet_tare_kg,
                                 )
                                 if load <= _grade_stack_capacity(variant.board_grade):
                                     break
@@ -680,7 +697,7 @@ def optimize_jointly(
                                 continue
 
                             floor = fit_rectangles(
-                                PALLET_L_MM, PALLET_W_MM, ct_l_mm, ct_w_mm
+                                c.pallet_length_mm, c.pallet_width_mm, ct_l_mm, ct_w_mm
                             )
                             if floor.count < 1:
                                 continue
@@ -697,7 +714,7 @@ def optimize_jointly(
 
                             payload = (
                                 cartons_per_container * variant.carton_weight_kg
-                                + pallets_per_container * PALLET_TARE_KG
+                                + pallets_per_container * c.pallet_tare_kg
                             )
                             if payload > ct["max_payload_kg"]:
                                 continue

@@ -298,3 +298,43 @@ class TestShipmentType:
     def test_unknown_shipment_type_rejected(self):
         with pytest.raises(ValueError, match="Unknown shipment_type"):
             run_full_pipeline(0.35, 250.0, 1000, shipment_type="nonsense")
+
+
+class TestPalletType:
+    """
+    The pallet is an input (the exporter's fleet dictates it), not an optimisation
+    variable. Both sides of the comparison must ride the selected pallet.
+    """
+
+    def test_default_is_industrial_and_matches_explicit(self):
+        implicit = run_full_pipeline(0.35, 250.0, 100_000)
+        explicit = run_full_pipeline(0.35, 250.0, 100_000, pallet_type="industrial")
+        assert implicit.total_cost == explicit.total_cost
+        assert implicit.current.total_cost == explicit.current.total_cost
+
+    def test_eur1_changes_the_physics(self):
+        ind = run_full_pipeline(0.35, 250.0, 100_000, pallet_type="industrial")
+        eur = run_full_pipeline(0.35, 250.0, 100_000, pallet_type="eur1")
+        # A 1200x800 deck holds fewer/different cartons than 1200x1000 —
+        # identical results would mean the parameter is not actually wired in.
+        assert (
+            eur.pallet.cartons_per_layer != ind.pallet.cartons_per_layer
+            or eur.total_cost != ind.total_cost
+        )
+
+    def test_baseline_rides_the_same_pallet(self):
+        eur = run_full_pipeline(0.35, 250.0, 100_000, pallet_type="eur1")
+        ind = run_full_pipeline(0.35, 250.0, 100_000, pallet_type="industrial")
+        # The baseline must move with the pallet too, or the saving silently
+        # includes a pallet swap the exporter never made.
+        assert eur.current.total_cost != ind.current.total_cost
+
+    def test_gma_works_and_savings_stay_defensible(self):
+        for key in ("industrial", "eur1", "gma"):
+            r = run_full_pipeline(0.35, 250.0, 100_000, pallet_type=key)
+            pct = r.total_savings / r.current.total_cost * 100
+            assert 0 < pct < 55, f"{key}: {pct:.1f}%"
+
+    def test_unknown_pallet_type_rejected(self):
+        with pytest.raises(ValueError, match="Unknown pallet_type"):
+            run_full_pipeline(0.35, 250.0, 1000, pallet_type="wood")

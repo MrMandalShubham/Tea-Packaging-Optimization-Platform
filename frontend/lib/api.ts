@@ -16,6 +16,8 @@ export interface SimulationInput {
   package_shape: "square" | "round";
   packaging_material: "paper" | "plastic" | "metal";
   target_market?: string;
+  /** Pallet the exporter ships on — their fleet dictates it, so it is an input. */
+  pallet_type?: string;
 }
 
 export interface SimulationCreateResponse {
@@ -393,6 +395,14 @@ export interface ContainerSpecOption {
   max_payload_kg: number;
 }
 
+export interface PalletTypeOption {
+  key: string;
+  name: string;
+  length_mm: number;
+  width_mm: number;
+  is_default: boolean;
+}
+
 /**
  * Master data backing the form dropdowns.
  *
@@ -407,6 +417,7 @@ export interface ReferenceData {
   materials: MaterialOption[];
   package_types: PackageTypeOption[];
   containers: ContainerSpecOption[];
+  pallet_types: PalletTypeOption[];
   min_package_weight_g: number;
   max_package_weight_g: number;
   min_tea_density: number;

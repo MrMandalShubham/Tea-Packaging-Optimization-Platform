@@ -36,6 +36,11 @@ const FALLBACK_MATERIALS = [
   { value: "plastic", label: "Plastic / LDPE" },
   { value: "metal", label: "Metal / Foil Laminate" },
 ];
+const FALLBACK_PALLETS = [
+  { value: "industrial", label: "Industrial 1200×1000" },
+  { value: "eur1", label: "EUR / EPAL 1200×800" },
+  { value: "gma", label: "US GMA 48×40 in (1219×1016)" },
+];
 
 export default function NewSimulationPage() {
   const router = useRouter();
@@ -47,6 +52,7 @@ export default function NewSimulationPage() {
     package_shape: "square",
     packaging_material: "paper",
     target_market: "",
+    pallet_type: "industrial",
   });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -73,6 +79,8 @@ export default function NewSimulationPage() {
     ref?.package_types.map((t) => ({ value: t.key, label: t.name })) ?? FALLBACK_SHAPES;
   const materialOptions =
     ref?.materials.map((m) => ({ value: m.key, label: m.name })) ?? FALLBACK_MATERIALS;
+  const palletOptions =
+    ref?.pallet_types?.map((p) => ({ value: p.key, label: p.name })) ?? FALLBACK_PALLETS;
 
   const minWeight = ref?.min_package_weight_g ?? 1;
   const maxWeight = ref?.max_package_weight_g ?? 5000;
@@ -115,6 +123,7 @@ export default function NewSimulationPage() {
         package_shape: form.package_shape as "square" | "round",
         packaging_material: form.packaging_material as "paper" | "plastic" | "metal",
         target_market: form.target_market || undefined,
+        pallet_type: form.pallet_type,
       });
       router.push(`/results/${result.id}`);
     } catch (e: any) {
@@ -234,6 +243,20 @@ export default function NewSimulationPage() {
                   onChange={(e) => update("packaging_material", e.target.value)}
                 />
               </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="pallet">Pallet Type</Label>
+              <Select
+                id="pallet"
+                options={palletOptions}
+                value={form.pallet_type}
+                onChange={(e) => update("pallet_type", e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                The pallet your warehouse ships on. The whole optimization — and
+                the baseline it is compared against — is solved on this pallet.
+              </p>
             </div>
 
             <div className="space-y-2">

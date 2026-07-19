@@ -62,6 +62,13 @@ const COST_COLORS: Record<string, string> = {
 // The container bar plots ONE series (packing density) — one hue, no legend.
 // The old version colored each bar a different hue, which encoded nothing the
 // x-axis label didn't already say.
+// Short display names for the pallet-type keys stored with the inputs.
+const PALLET_LABELS: Record<string, string> = {
+  industrial: "Industrial 1200×1000",
+  eur1: "EUR 1200×800",
+  gma: "GMA 1219×1016",
+};
+
 const BAR_HUE = "#1baf7a";
 const GRID_HAIRLINE = "#e1e0d9";
 
@@ -188,6 +195,11 @@ export default function ResultsPage() {
                 <span className="rounded-full border bg-muted/50 px-2.5 py-0.5 text-xs font-medium text-foreground">
                   {inputs.shipment_quantity.toLocaleString()} units
                 </span>
+                {inputs.pallet_type && (
+                  <span className="rounded-full border bg-muted/50 px-2.5 py-0.5 text-xs font-medium text-foreground">
+                    {PALLET_LABELS[inputs.pallet_type] ?? inputs.pallet_type} pallet
+                  </span>
+                )}
               </>
             )}
           </div>

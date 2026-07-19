@@ -31,7 +31,11 @@ from app.optimizers.joint import (
 )
 from app.optimizers.baseline import compute_baseline, BaselineResult
 from app.optimizers.package import PackageResult
-from app.optimizers.constants import DEFAULT_DISTANCE_NM
+from app.optimizers.constants import (
+    DEFAULT_DISTANCE_NM,
+    DEFAULT_PALLET_TYPE,
+    PALLET_TYPES,
+)
 
 # Retained for the standalone /optimize/* stage endpoints.
 from app.optimizers.package import optimize_package
@@ -173,6 +177,7 @@ def run_full_pipeline(
     package_shape: str = "square",
     packaging_material: str = "paper",
     target_market: Optional[str] = None,
+    pallet_type: str = DEFAULT_PALLET_TYPE,
     constraints: Optional[Constraints] = None,
     distance_nm: float = DEFAULT_DISTANCE_NM,
     # User-supplied "what we do today" values. When absent, the baseline is
@@ -212,6 +217,28 @@ def run_full_pipeline(
         ValueError: on invalid inputs or if no configuration is feasible.
     """
     qty, max_containers = resolve_shipment_type(shipment_quantity, shipment_type)
+
+    # Resolve the pallet the exporter ships on and stamp it into the search
+    # constraints. Both the optimiser and the baseline receive the SAME pallet —
+    # a comparison where the two sides ride different pallets measures the
+    # pallet, not the optimisation.
+    pallet_spec = PALLET_TYPES.get(pallet_type)
+    if pallet_spec is None:
+        raise ValueError(
+            f"Unknown pallet_type {pallet_type!r}; expected one of "
+            f"{sorted(PALLET_TYPES)}"
+        )
+    from dataclasses import replace as _dc_replace
+
+    base_constraints = constraints or Constraints()
+    constraints = _dc_replace(
+        base_constraints,
+        pallet_length_mm=pallet_spec["length_mm"],
+        pallet_width_mm=pallet_spec["width_mm"],
+        pallet_deck_mm=pallet_spec["deck_mm"],
+        max_pallet_load_kg=pallet_spec["max_load_kg"],
+        pallet_tare_kg=pallet_spec["tare_kg"],
+    )
 
     result = PipelineResult(
         tea_density=tea_density,
@@ -264,6 +291,7 @@ def run_full_pipeline(
         shipment_quantity=qty,
         material=packaging_material,
         distance_nm=distance_nm,
+        pallet=pallet_spec,
         current_package_l=current_package_l,
         current_package_w=current_package_w,
         current_package_h=current_package_h,

@@ -223,6 +223,10 @@ class SimulationInput(Base):
         nullable=False,
     )
     target_market = Column(String(100), nullable=True)
+    # Which pallet the exporter ships on (key into pallet_specs). Stored with
+    # the inputs because /layout and /max-capacity recompute from them — an
+    # unstored pallet would make those recomputes drift from the saved result.
+    pallet_type = Column(String(20), nullable=False, default="industrial", server_default="industrial")
 
     simulation = relationship("Simulation", back_populates="inputs")
 

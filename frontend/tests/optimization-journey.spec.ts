@@ -132,3 +132,33 @@ test.describe("Security", () => {
     expect(leaked).toBe(false);
   });
 });
+
+test.describe("Pallet type selection", () => {
+  test("EUR1 pallet drives the whole plan, and the choice is visible", async ({
+    page,
+  }) => {
+    await page.goto("/simulation");
+    await page.fill("#density", "0.35");
+    await page.selectOption("#weight", "250");
+    await page.fill("#qty", "100000");
+    await page.selectOption("#pallet", "eur1");
+    await page.locator("button[type='submit']").click();
+
+    await page.waitForURL(/\/results\/([0-9a-f-]+)/, { timeout: 30_000 });
+    const id = page.url().match(/\/results\/([0-9a-f-]+)/)![1];
+
+    // The chosen pallet is shown with the result, not silently swallowed.
+    await expect(
+      page.locator("text=EUR 1200×800").first()
+    ).toBeVisible({ timeout: 15_000 });
+
+    // And the recomputed layout actually rides the 1200×800 deck.
+    const layout = await page.request.get(
+      `http://localhost:8000/api/simulation/${id}/layout`
+    );
+    expect(layout.status()).toBe(200);
+    const plan = await layout.json();
+    expect(plan.pallet.length_mm).toBe(1200);
+    expect(plan.pallet.width_mm).toBe(800);
+  });
+});

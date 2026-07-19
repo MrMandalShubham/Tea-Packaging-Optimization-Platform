@@ -30,6 +30,8 @@ from app.models import (
     new_uuid,
 )
 from app.optimizers.constants import (
+    PALLET_TYPES,
+    DEFAULT_PALLET_TYPE,
     TEA_DENSITY,
     MATERIALS,
     BOARD_GRADES,
@@ -155,20 +157,28 @@ async def seed_reference_data(session: AsyncSession) -> None:
             },
         )
 
-    await _upsert(
-        session,
-        PalletSpec,
-        "key",
-        "EUR",
-        {
-            "name": "Industrial 1200×1000 (ISO 6780)",
-            "length_mm": PALLET_L_MM,
-            "width_mm": PALLET_W_MM,
-            "height_mm": PALLET_H_MM,
-            "max_load_kg": PALLET_MAX_LOAD,
-            "max_stack_height_mm": PALLET_MAX_STACK_MM,
-            "tare_kg": PALLET_TARE_KG,
-        },
+    for key, spec in PALLET_TYPES.items():
+        await _upsert(
+            session,
+            PalletSpec,
+            "key",
+            key,
+            {
+                "name": spec["name"],
+                "length_mm": spec["length_mm"],
+                "width_mm": spec["width_mm"],
+                "height_mm": spec["deck_mm"],
+                "max_load_kg": spec["max_load_kg"],
+                "max_stack_height_mm": PALLET_MAX_STACK_MM,
+                "tare_kg": spec["tare_kg"],
+            },
+        )
+    # Remove rows for pallet types that no longer exist (e.g. the old "EUR" key),
+    # so the reference endpoint never offers a pallet the engine cannot resolve.
+    from sqlalchemy import delete as _delete
+
+    await session.execute(
+        _delete(PalletSpec).where(PalletSpec.key.notin_(list(PALLET_TYPES)))
     )
 
     logger.info("Reference data seeded")

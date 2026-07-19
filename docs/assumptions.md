@@ -99,7 +99,7 @@ calls the real optimiser rather than guessing (see §6).
 | Constraint | Value | Source / rationale |
 |---|---|---|
 | Container interiors | ISO 668 | 20GP 5.898×2.352×2.385 m, 40GP 12.032×2.352×2.385 m, 40HC 12.032×2.352×2.698 m |
-| Pallet | Industrial 1200×1000 (ISO 6780) | 150 mm deck, 25 kg tare — see §3.4 |
+| Pallet | Selectable: Industrial / EUR1 / GMA | Default Industrial 1200×1000, 150 mm deck, 25 kg tare — see §3.4 |
 | Max pallet load | 1000 kg | Common export limit |
 | Max pallet height | 1.8 m incl. pallet | Warehouse racking convention — ⚠ see §3.1 |
 | Max carton weight | 25 kg | Manual handling limit |
@@ -141,21 +141,29 @@ Cartons are placed in a uniform block, in either orientation, plus a
 modelled:** full interlocking/pinwheel patterns, which could add a few percent.
 Real column stacking (aligned, not interlocked) is assumed for stack strength.
 
-### 3.4 Pallet type is fixed — ⚠ confirm the client's pallet
+### 3.4 Pallet type is a user input, not an optimisation variable
 
-The pallet is a constant, not an optimisation variable: one standard
-**1200 × 1000 mm industrial pallet** (an ISO 6780 size, sometimes called
-EUR2). What the optimiser decides is everything built *on* it — cartons per
-layer, orientation pattern, layer count, stacking.
+The exporter selects their pallet on the simulation form; their fleet dictates
+it, so the system does not "optimise" it away. Three standard export types are
+offered (`PALLET_TYPES` in `optimizers/constants.py`):
 
-Naming caution: the classic **EUR/EPAL pallet is 1200 × 800 mm**, a different
-footprint. 1200 × 1000 was chosen because it is the common containerised-export
-choice (20 fit a 40-ft floor cleanly). **If the client ships on true 1200 × 800
-EUR1 pallets, every downstream number changes** — layer fits, floor counts,
-utilisation. The change is confined to `PALLET_L` / `PALLET_W` in
-`optimizers/constants.py`; the whole search adapts automatically. Making pallet
-type a compared dimension (like the three container types) would be a natural
-extension if a client runs mixed fleets.
+| Key | Pallet | Footprint | Deck | Max load | Tare |
+|---|---|---|---|---|---|
+| `industrial` *(default)* | Industrial (ISO 6780) | 1200 × 1000 mm | 150 mm | 1000 kg | 25 kg |
+| `eur1` | EUR / EPAL | 1200 × 800 mm | 144 mm | 1000 kg | 25 kg |
+| `gma` | US GMA 48 × 40 in | 1219 × 1016 mm | 145 mm | 1130 kg | 23 kg |
+
+The selection drives the **entire** search — carton layer fits, layer counts,
+container floor fits, payload tare — and, critically, **both sides of the
+comparison**: the baseline is recomputed on the same pallet, so the reported
+saving never silently includes a pallet swap the exporter never made. The
+choice is stored with the simulation inputs, and every recompute (`/layout`,
+`/max-capacity`, AI what-if re-runs) rides the stored pallet.
+
+1200 × 1000 remains the default because it is the common containerised-export
+choice (20 fit a 40-ft floor cleanly). Switching the same reference shipment to
+EUR1 measurably changes the answer (e.g. 40GP × 3 instead of 40HC × 2) — which
+is exactly why the pallet is asked for rather than assumed.
 
 ### 3.5 Operational clearance and stack strength — real-world parameters
 

@@ -39,7 +39,40 @@ CONTAINERS = {
     },
 }
 
-# ── Pallet standards (EUR/ISO) ───────────────────────────────────
+# ── Pallet standards (ISO 6780) ─────────────────────────────────
+# The pallet is an INPUT the exporter selects (their fleet dictates it), not an
+# optimisation variable. Three common export types; the search adapts to
+# whichever is chosen, on both sides of the comparison.
+PALLET_TYPES = {
+    "industrial": {
+        "name": "Industrial 1200×1000",
+        "length_mm": 1200.0,
+        "width_mm": 1000.0,
+        "deck_mm": 150.0,
+        "max_load_kg": 1000.0,
+        "tare_kg": 25.0,
+    },
+    "eur1": {
+        "name": "EUR / EPAL 1200×800",
+        "length_mm": 1200.0,
+        "width_mm": 800.0,
+        "deck_mm": 144.0,
+        "max_load_kg": 1000.0,
+        "tare_kg": 25.0,
+    },
+    "gma": {
+        "name": "US GMA 48×40 in (1219×1016)",
+        "length_mm": 1219.0,
+        "width_mm": 1016.0,
+        "deck_mm": 145.0,
+        "max_load_kg": 1130.0,
+        "tare_kg": 23.0,
+    },
+}
+DEFAULT_PALLET_TYPE = "industrial"
+
+# Legacy single-pallet constants — the default type, kept because the pure
+# optimiser modules take dimensions via Constraints and these seed the defaults.
 PALLET_L = 1.200   # m
 PALLET_W = 1.000   # m
 PALLET_H = 0.150   # m (pallet itself)
