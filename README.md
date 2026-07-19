@@ -379,5 +379,6 @@ Stated rather than hidden: no authentication, no mixed-SKU containers, no real
 carrier freight quotes, and `target_market` is recorded but not yet a regulatory
 constraint. Carton compression is modelled with conservative default stack
 ratings — replace them with the client's board data before trusting a specific
-board choice. "Export to PDF" is the browser's
-print dialog, not generated PDF.
+board choice. "Export to PDF" uses the browser's print pipeline — it produces
+the complete multi-page report (a regression test generates a real PDF and
+counts its pages), but there is no server-side PDF generator.

@@ -339,7 +339,10 @@ Called out explicitly rather than left as a silent gap:
 - **Multi-leg logistics** — a single ocean voyage; no inland haulage or transhipment.
 - **Carton compression (BCT)** — board grade is chosen by weight, not by verified
   stack strength.
-- **Export to PDF** — the browser's print dialog, not generated PDF.
+- **Export to PDF** — the browser's print pipeline, producing the full
+  paginated report (print CSS flattens the scrolling app shell; a regression
+  test generates a real PDF and checks the page count). No server-side PDF
+  generator.
 - **Real freight quotes** — a linear rate model, not carrier APIs.
 
 ---

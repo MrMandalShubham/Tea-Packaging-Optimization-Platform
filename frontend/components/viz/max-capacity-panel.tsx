@@ -132,7 +132,10 @@ export function MaxCapacityPanel({ simulationId }: { simulationId: string }) {
   );
 
   return (
-    <Card>
+    // no-print: this panel's content is loaded on demand; unloaded it would
+    // print as a dashed call-to-action box, and its numbers live in the Excel
+    // export anyway. Same policy as the 3D panel.
+    <Card className="no-print">
       <CardHeader>
         <CardTitle className="text-base flex items-center gap-2">
           <Gauge className="h-5 w-5 text-primary" /> Maximum Capacity

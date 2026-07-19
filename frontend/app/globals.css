@@ -59,9 +59,40 @@
 @media print {
   @page { size: A4; margin: 12mm; }
   body { background: white !important; color: black !important; }
+
+  /* THE fix for "PDF only shows the first page".
+     The app shell is a 100vh flex row with overflow hidden — content scrolls
+     inside <main>, the document itself never grows, and the print engine
+     clips at one viewport. (Same trap that once broke full-page screenshots;
+     it is documented in playwright.config.ts.) For print, collapse the app
+     shell back into normal document flow so pagination works. Setting
+     overflow on <main> alone is NOT enough — the fixed-height parent still
+     clips it. */
+  .app-shell {
+    display: block !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+  main {
+    display: block !important;
+    height: auto !important;
+    margin-left: 0 !important;
+    padding: 0 !important;
+    overflow: visible !important;
+  }
+
   aside { display: none !important; }
   .no-print { display: none !important; }
-  main { margin-left: 0 !important; padding: 0 !important; overflow: visible !important; }
+
+  /* Keep each card, chart and table row whole across page breaks. */
   .rounded-lg { break-inside: avoid; box-shadow: none !important; }
   .recharts-responsive-container { break-inside: avoid; }
+  tr { break-inside: avoid; }
+
+  /* Charts, KPI colours and badges must survive on paper — browsers strip
+     backgrounds by default and the report would lose its data ink. */
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
 }
