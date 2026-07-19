@@ -14,7 +14,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, History as HistoryIcon } from "lucide-react";
 
 function formatCurrency(val: number) {
   return new Intl.NumberFormat("en-IN", {
@@ -139,14 +139,20 @@ export default function HistoryPage() {
           </div>
         </>
       ) : (
-        <div className="rounded-lg border bg-card p-12 text-center">
-          <p className="text-muted-foreground">
-            No simulations yet.{" "}
-            <a href="/simulation" className="text-primary underline">
-              Create your first simulation
-            </a>
-            .
-          </p>
+        <div className="flex flex-col items-center gap-4 rounded-lg border border-dashed bg-card px-6 py-16 text-center">
+          <span className="flex h-14 w-14 items-center justify-center rounded-full bg-primary/10 text-primary">
+            <HistoryIcon className="h-7 w-7" aria-hidden />
+          </span>
+          <div className="max-w-md space-y-1.5">
+            <h2 className="text-lg font-semibold">Nothing here yet</h2>
+            <p className="text-sm text-muted-foreground">
+              Every optimization you run is saved here with its full results, so
+              you can revisit, compare and export past plans.
+            </p>
+          </div>
+          <Button onClick={() => router.push("/simulation")}>
+            Run your first simulation
+          </Button>
         </div>
       )}
     </div>

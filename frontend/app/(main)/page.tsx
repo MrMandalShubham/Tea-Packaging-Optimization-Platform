@@ -14,7 +14,8 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
-import { LayoutDashboard, TrendingUp, Package } from "lucide-react";
+import { LayoutDashboard, TrendingUp, Package, FlaskConical, ArrowRight } from "lucide-react";
+import { Button } from "@/components/ui/button";
 
 function formatCurrency(val: number) {
   return new Intl.NumberFormat("en-IN", {
@@ -59,6 +60,35 @@ export default function DashboardPage() {
       <div className="rounded-lg border border-destructive/50 bg-destructive/10 p-6 text-center">
         <p className="text-destructive font-medium">Failed to load dashboard</p>
         <p className="text-sm text-muted-foreground mt-1">{error}</p>
+      </div>
+    );
+  }
+
+  // First-run experience: a page of zero-tiles reads as "broken", not "new".
+  // Lead the empty account to its first simulation instead.
+  if (data && data.total_simulations === 0) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
+          <p className="text-muted-foreground mt-1">AI-powered packaging optimization overview.</p>
+        </div>
+        <div className="flex flex-col items-center gap-4 rounded-lg border border-dashed bg-card px-6 py-16 text-center">
+          <span className="flex h-14 w-14 items-center justify-center rounded-full bg-primary/10 text-primary">
+            <FlaskConical className="h-7 w-7" aria-hidden />
+          </span>
+          <div className="max-w-md space-y-1.5">
+            <h2 className="text-lg font-semibold">Run your first optimization</h2>
+            <p className="text-sm text-muted-foreground">
+              Enter tea density, pouch weight and shipment size — the optimizer
+              searches every pouch, carton, pallet and container combination and
+              returns the cheapest plan that can actually be loaded.
+            </p>
+          </div>
+          <Button onClick={() => router.push("/simulation")} className="gap-1.5">
+            New Simulation <ArrowRight className="h-4 w-4" aria-hidden />
+          </Button>
+        </div>
       </div>
     );
   }
