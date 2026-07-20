@@ -16,11 +16,6 @@ import {
 } from "@/components/ui/table";
 import { Spinner } from "@/components/ui/spinner";
 import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
   Tooltip,
   ResponsiveContainer,
   PieChart,
@@ -29,14 +24,12 @@ import {
   Legend,
 } from "recharts";
 import { ChatWidget } from "@/components/layout/chat-widget";
-import { Container3DPanel } from "@/components/viz/container-3d-panel";
-import { MaxCapacityPanel } from "@/components/viz/max-capacity-panel";
+import { ContainerLoadingPanel } from "@/components/results/container-loading";
 import { KpiStrip, PipelineFlow } from "@/components/results/summary";
 import { exportSimulationToExcel } from "@/lib/export";
 import {
   ArrowLeft,
   Package,
-  Truck,
   DollarSign,
   TrendingDown,
   Printer,
@@ -59,18 +52,12 @@ const COST_COLORS: Record<string, string> = {
   Freight: "#1baf7a",
 };
 
-// The container bar plots ONE series (packing density) — one hue, no legend.
-// The old version colored each bar a different hue, which encoded nothing the
-// x-axis label didn't already say.
 // Short display names for the pallet-type keys stored with the inputs.
 const PALLET_LABELS: Record<string, string> = {
   industrial: "Industrial 1200×1000",
   eur1: "EUR 1200×800",
   gma: "GMA 1219×1016",
 };
-
-const BAR_HUE = "#1baf7a";
-const GRID_HAIRLINE = "#e1e0d9";
 
 function formatCurrency(val: number) {
   return new Intl.NumberFormat("en-IN", {
@@ -148,17 +135,7 @@ export default function ResultsPage() {
     );
   }
 
-  const { best_package, carton, pallet, best_container, container_alternatives, comparison, inputs } = data;
-  const allContainers = best_container
-    ? [best_container, ...container_alternatives]
-    : [];
-
-  // Container chart — packing density, which compares the schemes like for like.
-  // Shipment utilisation would rank them by how full the last box happens to be.
-  const containerChartData = allContainers.map((c) => ({
-    name: c.container_type,
-    Utilization: c.capacity_utilization_pct,
-  }));
+  const { best_package, carton, pallet, best_container, comparison, inputs } = data;
 
   // Cost breakdown. Savings is deliberately excluded: it is the difference
   // between two totals, not a slice of this one, and putting it in the same pie
@@ -410,103 +387,13 @@ export default function ResultsPage() {
         )}
       </div>
 
-      {/* ── Container Comparison Chart ───────────────────────────────── */}
-      {allContainers.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base flex items-center gap-2">
-              <Truck className="h-5 w-5 text-primary" /> Container Comparison
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="h-72 mb-4">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={containerChartData} barGap={4}>
-                  {/* Hairline solid grid, recessive — dashed gray-noise removed. */}
-                  <CartesianGrid stroke={GRID_HAIRLINE} vertical={false} />
-                  <XAxis dataKey="name" tickLine={false} axisLine={{ stroke: GRID_HAIRLINE }} />
-                  <YAxis unit="%" tickLine={false} axisLine={false} width={40} />
-                  <Tooltip
-                    formatter={(value: number) => [`${value}%`, "Packing density"]}
-                    cursor={{ fill: "rgba(0,0,0,0.04)" }}
-                  />
-                  {/* Thin marks: ≤24px bars, rounded data-end, square baseline. */}
-                  <Bar dataKey="Utilization" fill={BAR_HUE} barSize={24} radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-
-            {/* Container detail table */}
-            <div className="border rounded-md">
-              <Table>
-                {/* Every column states which container it describes. A single
-                    "Units" column once meant capacity across all containers,
-                    which made a 20GP look like it out-shipped a 40GP — it
-                    doesn't, it just needs five boxes instead of two. */}
-                <TableHeader>
-                  <TableRow>
-                    <TableHead rowSpan={2} className="align-bottom">Container</TableHead>
-                    <TableHead colSpan={4} className="text-center border-l text-xs">
-                      Per container (full load)
-                    </TableHead>
-                    <TableHead colSpan={3} className="text-center border-l text-xs">
-                      This shipment
-                    </TableHead>
-                    <TableHead rowSpan={2} className="align-bottom border-l">Best</TableHead>
-                  </TableRow>
-                  <TableRow>
-                    <TableHead className="text-right border-l">Cartons</TableHead>
-                    <TableHead className="text-right" title="Pouches in one full container">
-                      Total Units
-                    </TableHead>
-                    <TableHead className="text-right" title="Packing density of a full container">
-                      Packed
-                    </TableHead>
-                    <TableHead className="text-right" title="Unused volume in one full container">
-                      Empty Space
-                    </TableHead>
-                    <TableHead className="text-right border-l">Needed</TableHead>
-                    <TableHead className="text-right" title="Share of booked volume that holds tea">
-                      Utilization
-                    </TableHead>
-                    <TableHead className="text-right">Freight</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {allContainers.map((c) => (
-                    <TableRow key={c.container_type} className={c.is_best ? "bg-primary/5" : ""}>
-                      <TableCell className="font-medium">
-                        {c.container_type}
-                        {c.pallet_stack != null && c.pallet_stack > 1 && (
-                          <span className="block text-[10px] text-muted-foreground">
-                            pallets {c.pallet_stack}-high
-                          </span>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-right border-l">{c.cartons_per_container.toLocaleString()}</TableCell>
-                      <TableCell className="text-right">{c.units_per_container.toLocaleString()}</TableCell>
-                      <TableCell className="text-right">{c.capacity_utilization_pct}%</TableCell>
-                      <TableCell className="text-right">{c.empty_space_per_container_m3} m³</TableCell>
-                      <TableCell className="text-right border-l font-medium">{c.containers_needed}</TableCell>
-                      <TableCell className="text-right">{c.utilization_pct}%</TableCell>
-                      <TableCell className="text-right">{formatCurrency(c.freight_cost)}</TableCell>
-                      <TableCell className="border-l">{c.is_best && <Badge variant="success">Best</Badge>}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* ── Maximum capacity ─────────────────────────────────────────── */}
-      {/* Sits right after Container Comparison: it answers "how much fits in one
-          container", so it belongs next to the container numbers it extends. */}
-      <MaxCapacityPanel simulationId={data.id} />
-
-      {/* ── 3D load plan ─────────────────────────────────────────────── */}
-      <Container3DPanel simulationId={data.id} />
+      {/* ── Container Loading — one switchable panel ─────────────────────
+          "For your order" and "Maximum per container" answer two different
+          questions and used to live in three separate places. Unified here so a
+          reader flips between them and sees the same ordered detail — headline,
+          the stacking-chain multiplication, fill, per-container table, and the
+          3D — for both. */}
+      <ContainerLoadingPanel data={data} simulationId={data.id} />
 
       {/* ── Cost Breakdown + Comparison ──────────────────────────────── */}
       {/* The comparison table carries a driver sentence per row, so it gets two

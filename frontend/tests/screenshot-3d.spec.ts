@@ -19,20 +19,21 @@ test("08 3D container load", async ({ page }) => {
   await page.locator("button[type='submit']").click();
   await page.waitForURL(/\/results\/[0-9a-f-]+/, { timeout: 40_000 });
 
-  // The scene is behind a click: three.js is ~600 KB and is not fetched until
-  // someone actually wants it.
-  await page.getByRole("button", { name: /load 3d view/i }).click();
+  // The 3D lives in the unified Container Loading panel, "For your order" mode
+  // (the default). The scene is behind a click: three.js is ~600 KB and is not
+  // fetched until someone actually wants it.
+  await page.getByRole("button", { name: /view this load in 3d/i }).click();
 
-  const canvas = page.locator("[data-testid='container-3d'] canvas");
+  const canvas = page.locator("[data-testid='order-3d'] canvas");
   await expect(canvas).toBeVisible({ timeout: 30_000 });
 
   // The overlay proves the scene is driven by the real plan, not placeholder art.
   await expect(page.getByText(/cartons ·/)).toBeVisible();
 
-  await page.locator("[data-testid='container-3d']").scrollIntoViewIfNeeded();
+  await page.locator("[data-testid='order-3d']").scrollIntoViewIfNeeded();
   await page.waitForTimeout(2500); // let WebGL draw
 
-  await page.locator("[data-testid='container-3d']").screenshot({
+  await page.locator("[data-testid='order-3d']").screenshot({
     path: `${DIR}/08-3d-container.png`,
   });
 });
